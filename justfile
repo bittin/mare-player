@@ -319,8 +319,37 @@ stats:
     fi
     tokei .
 
-# Bump cargo version, create git commit, and create tag (usage: just tag v0.1.0)
-tag version:
+# Fuzz-test parsing targets (requires nightly: rustup toolchain install nightly)
+# Usage: just fuzz              — run all targets for 60s each
+#        just fuzz dash_parse   — run a single target
+
+# just fuzz dash_parse 0 — run until interrupted (Ctrl-C)
+fuzz target="" duration="60":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if ! command -v cargo-fuzz >/dev/null 2>&1; then
+        echo "Error: cargo-fuzz not found. Install with: cargo install cargo-fuzz"
+        exit 1
+    fi
+    if [ -n "{{ target }}" ]; then
+        echo "═══ Fuzzing: {{ target }} ═══"
+        if [ "{{ duration }}" = "0" ]; then
+            cargo +nightly fuzz run "fuzz_{{ target }}"
+        else
+            cargo +nightly fuzz run "fuzz_{{ target }}" -- -max_total_time="{{ duration }}"
+        fi
+    else
+        for t in $(cargo +nightly fuzz list 2>/dev/null); do
+            echo ""
+            echo "═══ Fuzzing: ${t} ({{ duration }}s) ═══"
+            cargo +nightly fuzz run "$t" -- -max_total_time="{{ duration }}"
+        done
+        echo ""
+        echo "All fuzz targets passed ✓"
+    fi
+
+# Bump cargo version, create git commit, and create tag (usage: just tag v0.1.0 "Ocean Breeze")
+tag version name="":
     #!/usr/bin/env sh
     set -eu
     cargo_version="{{ trim_start_match(version, "v") }}"
@@ -330,4 +359,21 @@ tag version:
     cargo clean
     git add Cargo.lock
     git commit -m "release: ${tag}"
-    git tag -a "${tag}" -m ''
+    git tag -a "${tag}" -m '{{ name }}'
+
+# Cut a release: bump version, tag, and push (usage: just release v0.1.7 "Ocean Breeze")
+release version name="":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    tag="v{{ trim_start_match(version, "v") }}"
+    if [ -n "{{ name }}" ]; then
+        echo "🌊 Release: ${tag} — {{ name }}"
+    else
+        echo "🌊 Release: ${tag}"
+    fi
+    echo ""
+    read -rp "Proceed? [y/N] " confirm
+    [[ "$confirm" =~ ^[Yy]$ ]] || { echo "Aborted."; exit 1; }
+    just tag "{{ version }}" '{{ name }}'
+    git push origin main
+    git push origin "${tag}"
