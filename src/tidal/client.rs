@@ -12,7 +12,7 @@
 //! - HiRes/DASH streaming support
 
 use super::auth::{AuthManager, AuthState, DeviceCodeInfo, StoredCredentials, UserProfile};
-use super::models::{Album, Artist, Mix, Playlist, SearchResults, Track};
+use super::models::{Album, Artist, FeedActivity, FeedItem, Mix, Playlist, SearchResults, Track};
 use base64::{Engine, engine::general_purpose};
 use reqwest::header::{AUTHORIZATION, HeaderMap, HeaderValue};
 use serde::Deserialize;
@@ -26,6 +26,31 @@ use crate::disk_cache::DiskCache;
 
 /// Safety margin before token expiry to trigger refresh (5 minutes)
 const TOKEN_REFRESH_MARGIN_SECS: u64 = 300;
+
+/// Format a duration in seconds for human-readable log output.
+/// Shows hours (e.g. "4.0h") when ≥ 60 min, otherwise minutes (e.g. "5min").
+fn format_duration(secs: u64) -> String {
+    let mins = secs / 60;
+    if mins >= 60 {
+        format!("{:.1}h", secs as f64 / 3600.0)
+    } else {
+        format!("{}min", mins)
+    }
+}
+
+/// Check if a tidlers error is a transient network error (DNS, connect, timeout)
+/// that should be retried rather than treated as an auth failure.
+fn is_tidlers_network_error(e: &tidlers::error::TidalError) -> bool {
+    let dbg = format!("{:?}", e);
+    dbg.contains("dns error")
+        || dbg.contains("name resolution")
+        || dbg.contains("ConnectError")
+        || dbg.contains("Timeout")
+        || dbg.contains("connection reset")
+        || dbg.contains("connection refused")
+        || dbg.contains("NetworkUnreachable")
+        || dbg.contains("No route to host")
+}
 
 /// Result of getting a playback URL - can be direct URL, DASH manifest, or cached file
 #[derive(Debug, Clone)]
@@ -684,10 +709,11 @@ impl TidalAppClient {
                             let expires_at = last_refresh + expiry;
                             let remaining = expires_at.saturating_sub(now);
                             info!(
-                                "Token refreshed - expires_in: {}s, remaining: {}s (~{} minutes)",
+                                "Token refreshed - expires_in: {}s (~{}), remaining: {}s (~{})",
                                 expiry,
+                                format_duration(expiry),
                                 remaining,
-                                remaining / 60
+                                format_duration(remaining),
                             );
                         }
 
@@ -736,12 +762,15 @@ impl TidalAppClient {
                 return true;
             }
 
+            let elapsed = now.saturating_sub(last_refresh);
             debug!(
-                "Token still valid - expires_in: {}s, elapsed: {}s, remaining: {}s (~{} minutes)",
+                "Token still valid - expires_in: {}s (~{}), elapsed: {}s (~{}), remaining: {}s (~{})",
                 expiry,
-                now.saturating_sub(last_refresh),
+                format_duration(expiry),
+                elapsed,
+                format_duration(elapsed),
                 remaining,
-                remaining / 60
+                format_duration(remaining),
             );
 
             false
@@ -799,18 +828,37 @@ impl TidalAppClient {
                     let elapsed = now.saturating_sub(last_refresh);
                     let remaining = expires_at.saturating_sub(now);
                     info!(
-                        "Stored token state - expires_in: {}s (~{} min), elapsed since refresh: {}s (~{} min), remaining: {}s (~{} min)",
+                        "Stored token state - expires_in: {}s (~{}), elapsed since refresh: {}s (~{}), remaining: {}s (~{})",
                         expiry,
-                        expiry / 60,
+                        format_duration(expiry),
                         elapsed,
-                        elapsed / 60,
+                        format_duration(elapsed),
                         remaining,
-                        remaining / 60
+                        format_duration(remaining),
                     );
                 }
 
-                // Try to refresh the access token
-                match client.refresh_access_token(false).await {
+                // Try to refresh the access token, retrying on transient network
+                // errors (e.g. DNS not ready yet after lid-open / resume from suspend).
+                let refresh_result = {
+                    let mut result = client.refresh_access_token(false).await;
+                    for attempt in 1..=3u32 {
+                        match &result {
+                            Err(e) if is_tidlers_network_error(e) => {
+                                let delay = 2u64 << (attempt - 1); // 2s, 4s, 8s
+                                warn!(
+                                    "Network error on token refresh (attempt {}/4), retrying in {}s: {}",
+                                    attempt, delay, e
+                                );
+                                tokio::time::sleep(std::time::Duration::from_secs(delay)).await;
+                                result = client.refresh_access_token(false).await;
+                            }
+                            _ => break,
+                        }
+                    }
+                    result
+                };
+                match refresh_result {
                     Ok(refreshed) => {
                         if refreshed {
                             info!("Successfully refreshed TIDAL access token");
@@ -874,9 +922,9 @@ impl TidalAppClient {
                             client.session.auth.last_refresh_time,
                         ) {
                             info!(
-                                "Token valid for {}s (~{} minutes) from last refresh",
+                                "Token valid for {}s (~{}) from last refresh",
                                 expiry,
-                                expiry / 60
+                                format_duration(expiry),
                             );
                             let now = std::time::SystemTime::now()
                                 .duration_since(std::time::UNIX_EPOCH)
@@ -884,9 +932,9 @@ impl TidalAppClient {
                                 .unwrap_or(0);
                             let remaining = (last_refresh + expiry).saturating_sub(now);
                             info!(
-                                "Token will expire in {}s (~{} minutes)",
+                                "Token will expire in {}s (~{})",
                                 remaining,
-                                remaining / 60
+                                format_duration(remaining),
                             );
                         }
 
@@ -901,11 +949,20 @@ impl TidalAppClient {
                         Ok(true)
                     }
                     Err(e) => {
-                        warn!("Failed to refresh access token: {:?}", e);
-                        // Clear invalid credentials
-                        let _ = AuthManager::delete_credentials();
-                        self.auth_manager.set_state(AuthState::NotAuthenticated);
-                        Err(TidalError::SessionExpired)
+                        if is_tidlers_network_error(&e) {
+                            // Network errors are transient — keep credentials for next attempt
+                            warn!(
+                                "Token refresh failed after retries (network error, credentials preserved): {}",
+                                e
+                            );
+                            Err(TidalError::NetworkError(format!("{}", e)))
+                        } else {
+                            // Auth / protocol error — credentials are likely invalid
+                            warn!("Failed to refresh access token: {:?}", e);
+                            let _ = AuthManager::delete_credentials();
+                            self.auth_manager.set_state(AuthState::NotAuthenticated);
+                            Err(TidalError::SessionExpired)
+                        }
                     }
                 }
             }
@@ -997,9 +1054,9 @@ impl TidalAppClient {
                     client.session.auth.last_refresh_time,
                 ) {
                     info!(
-                        "New OAuth token received - expires_in: {}s (~{} minutes)",
+                        "New OAuth token received - expires_in: {}s (~{})",
                         expiry,
-                        expiry / 60
+                        format_duration(expiry),
                     );
                     let now = std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
@@ -1007,9 +1064,9 @@ impl TidalAppClient {
                         .unwrap_or(0);
                     let remaining = (last_refresh + expiry).saturating_sub(now);
                     info!(
-                        "Token will expire in {}s (~{} minutes)",
+                        "Token will expire in {}s (~{})",
                         remaining,
-                        remaining / 60
+                        format_duration(remaining),
                     );
                 }
 
@@ -2947,5 +3004,191 @@ impl TidalAppClient {
     pub async fn unfollow_artist(&self, artist_id: &str) -> TidalResult<()> {
         debug!("Unfollowing artist {}", artist_id);
         self.remove_from_favorites("artists", artist_id).await
+    }
+
+    /// Fetch the user's feed (new releases from followed artists).
+    ///
+    /// Calls `GET /v2/feed/activities` and returns a list of activities
+    /// sorted newest-first by `occurredAt`.
+    pub async fn get_feed(&self) -> TidalResult<Vec<FeedActivity>> {
+        self.ensure_valid_token().await?;
+        let ctx = self.auth_context().await?;
+
+        debug!("Fetching feed activities");
+
+        let http_client = reqwest::Client::new();
+        let url = format!(
+            "https://api.tidal.com/v2/feed/activities?countryCode={}&locale=en_US",
+            ctx.country_code
+        );
+
+        let response = http_client
+            .get(&url)
+            .header(AUTHORIZATION, format!("Bearer {}", ctx.access_token))
+            .send()
+            .await
+            .map_err(|e| TidalError::NetworkError(format!("feed request failed: {}", e)))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            error!("Feed request failed: HTTP {} — {}", status, body);
+            return Err(TidalError::RequestFailed(format!("HTTP {}", status)));
+        }
+
+        let body = response
+            .text()
+            .await
+            .map_err(|e| TidalError::NetworkError(format!("reading feed body: {}", e)))?;
+
+        let json: serde_json::Value = serde_json::from_str(&body)
+            .map_err(|e| TidalError::ParseError(format!("parsing feed JSON: {}", e)))?;
+
+        let mut activities = Vec::new();
+
+        if let Some(items) = json.get("activities").and_then(|v| v.as_array()) {
+            for item in items {
+                let activity = item.get("followableActivity");
+                let seen = item.get("seen").and_then(|v| v.as_bool()).unwrap_or(false);
+
+                if let Some(activity) = activity {
+                    let activity_type = activity
+                        .get("activityType")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+
+                    let occurred_at = activity
+                        .get("occurredAt")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+
+                    let feed_item = match activity_type {
+                        "NEW_ALBUM_RELEASE" => {
+                            activity.get("album").and_then(|album_json| {
+                                let id = album_json.get("id")?.as_u64()?.to_string();
+                                let title = album_json.get("title")?.as_str()?.to_string();
+                                let cover = album_json
+                                    .get("cover")
+                                    .and_then(|v| v.as_str())
+                                    .map(Self::uuid_to_cdn_url);
+                                let explicit = album_json
+                                    .get("explicit")
+                                    .and_then(|v| v.as_bool())
+                                    .unwrap_or(false);
+                                let release_date = album_json
+                                    .get("releaseDate")
+                                    .and_then(|v| v.as_str())
+                                    .map(|s| s.to_string());
+                                let audio_quality = album_json
+                                    .get("audioQuality")
+                                    .and_then(|v| v.as_str())
+                                    .map(|s| s.to_string());
+                                let num_tracks = album_json
+                                    .get("numberOfTracks")
+                                    .and_then(|v| v.as_u64())
+                                    .unwrap_or(0)
+                                    as u32;
+                                let duration = album_json
+                                    .get("duration")
+                                    .and_then(|v| v.as_u64())
+                                    .unwrap_or(0)
+                                    as u32;
+
+                                // Extract artist info
+                                let (artist_name, artist_id) = album_json
+                                    .get("artists")
+                                    .and_then(|v| v.as_array())
+                                    .and_then(|artists| {
+                                        // Join all main artist names
+                                        let names: Vec<String> = artists
+                                            .iter()
+                                            .filter(|a| {
+                                                a.get("main")
+                                                    .and_then(|v| v.as_bool())
+                                                    .unwrap_or(true)
+                                            })
+                                            .filter_map(|a| {
+                                                a.get("name")
+                                                    .and_then(|v| v.as_str())
+                                                    .map(String::from)
+                                            })
+                                            .collect();
+                                        let first_id = artists.first().and_then(|a| {
+                                            a.get("id")
+                                                .and_then(|v| v.as_u64())
+                                                .map(|id| id.to_string())
+                                        });
+                                        if names.is_empty() {
+                                            None
+                                        } else {
+                                            Some((names.join(", "), first_id))
+                                        }
+                                    })
+                                    .unwrap_or_else(|| ("Unknown Artist".to_string(), None));
+
+                                Some(FeedItem::AlbumRelease(Album {
+                                    id,
+                                    title,
+                                    artist_name,
+                                    artist_id,
+                                    num_tracks,
+                                    duration,
+                                    release_date,
+                                    cover_url: cover,
+                                    explicit,
+                                    audio_quality,
+                                    review: None,
+                                }))
+                            })
+                        }
+                        "NEW_HISTORY_MIX" => activity.get("historyMix").and_then(|mix_json| {
+                            let id = mix_json.get("id")?.as_str()?.to_string();
+                            let title = mix_json
+                                .get("titleTextInfo")
+                                .and_then(|v| v.get("text"))
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("History Mix")
+                                .to_string();
+                            let subtitle = mix_json
+                                .get("subTitleTextInfo")
+                                .and_then(|v| v.get("text"))
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_string();
+                            let image_url = mix_json
+                                .get("images")
+                                .and_then(|v| v.get("SMALL"))
+                                .and_then(|v| v.get("url"))
+                                .and_then(|v| v.as_str())
+                                .map(|s| s.to_string());
+
+                            Some(FeedItem::HistoryMix {
+                                id,
+                                title,
+                                subtitle,
+                                image_url,
+                            })
+                        }),
+                        _ => {
+                            debug!("Unknown feed activity type: {}", activity_type);
+                            None
+                        }
+                    };
+
+                    if let Some(feed_item) = feed_item {
+                        activities.push(FeedActivity {
+                            item: feed_item,
+                            occurred_at,
+                            seen,
+                        });
+                    }
+                }
+            }
+        }
+
+        info!("Feed: loaded {} activities", activities.len());
+        self.cache_api_response("user_feed", &activities);
+        Ok(activities)
     }
 }

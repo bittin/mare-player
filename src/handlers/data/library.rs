@@ -11,7 +11,7 @@ use cosmic::prelude::*;
 
 use crate::messages::Message;
 use crate::state::{AppModel, ViewState};
-use crate::tidal::models::{Album, Artist, Mix, Playlist, Track};
+use crate::tidal::models::{Album, Artist, FeedActivity, FeedItem, Mix, Playlist, Track};
 
 // =============================================================================
 // Task Helper Methods
@@ -195,6 +195,18 @@ impl AppModel {
                 Ok(albums)
             },
             |result| cosmic::Action::App(Message::TrackDetailRelatedAlbumsLoaded(result)),
+        )
+    }
+
+    /// Load feed activities (new releases from followed artists)
+    pub(crate) fn load_feed(&self) -> Task<cosmic::Action<Message>> {
+        let client = self.tidal_client.clone();
+        Task::perform(
+            async move {
+                let client = client.lock().await;
+                client.get_feed().await.map_err(|e| e.to_string())
+            },
+            |result| cosmic::Action::App(Message::FeedLoaded(result)),
         )
     }
 
@@ -653,6 +665,39 @@ impl AppModel {
         }
     }
 
+    /// Handle loading feed
+    pub fn handle_load_feed(&mut self) -> Task<cosmic::Action<Message>> {
+        self.is_loading = true;
+        self.load_feed()
+    }
+
+    /// Handle feed loaded result
+    pub fn handle_feed_loaded(
+        &mut self,
+        result: Result<Vec<FeedActivity>, String>,
+    ) -> Task<cosmic::Action<Message>> {
+        self.is_loading = false;
+        match result {
+            Ok(activities) => {
+                tracing::info!("Loaded {} feed activities", activities.len());
+                let urls: Vec<String> = activities
+                    .iter()
+                    .filter_map(|a| match &a.item {
+                        FeedItem::AlbumRelease(album) => album.cover_url.clone(),
+                        FeedItem::HistoryMix { image_url, .. } => image_url.clone(),
+                    })
+                    .collect();
+                self.feed_activities = activities;
+                self.load_images_for_urls(urls)
+            }
+            Err(e) => {
+                tracing::error!("Failed to load feed: {}", e);
+                self.error_message = Some(format!("Failed to load feed: {}", e));
+                Task::none()
+            }
+        }
+    }
+
     /// Handle loading profiles
     pub fn handle_load_profiles(&mut self) -> Task<cosmic::Action<Message>> {
         self.is_loading = true;
@@ -668,7 +713,7 @@ impl AppModel {
         match result {
             Ok(mut artists) => {
                 tracing::info!("Loaded {} followed artists", artists.len());
-                artists.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+                artists.sort_by_key(|a| a.name.to_lowercase());
                 self.followed_artist_ids = artists.iter().map(|a| a.id.clone()).collect();
                 self.user_followed_artists = artists;
                 self.load_images_for_profiles()

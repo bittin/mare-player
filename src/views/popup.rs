@@ -120,6 +120,7 @@ impl AppModel {
             ViewState::TrackRadio => self.view_track_radio(),
             ViewState::TrackDetail => self.view_track_detail(),
             ViewState::FavoriteTracks => self.view_favorite_tracks(),
+            ViewState::Feed => self.view_feed(),
             ViewState::History => self.view_history(),
             ViewState::Profiles => self.view_profiles(),
             ViewState::Settings => self.view_settings(),
@@ -143,10 +144,12 @@ impl AppModel {
                     .padding(2),
             )
             .spacing(8)
-            .align_y(Alignment::Center);
+            .align_y(Alignment::Center)
+            .width(Length::Fill);
 
         container(error_row)
             .padding(8)
+            .width(Length::Fill)
             .class(cosmic::theme::Container::custom(|_theme| {
                 cosmic::widget::container::Style {
                     background: Some(cosmic::iced::Background::Color(
