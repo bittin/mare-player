@@ -12,7 +12,6 @@
 //! core logic and can be called from virtual `List` closures that don't have
 //! access to `&self`.  The corresponding [`AppModel`] methods delegate to them.
 
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use cosmic::Element;
@@ -22,7 +21,7 @@ use cosmic::widget::{self, button, container, icon, text};
 
 use crate::fl;
 use crate::messages::Message;
-use crate::state::AppModel;
+use crate::state::{AppModel, HandleCache};
 use crate::tidal::models::{Album, Playlist, Track};
 
 use super::constants::THUMBNAIL_SIZE;
@@ -36,9 +35,10 @@ use super::list_helpers::{TrackRowOptions, fading_text_column, list_item};
 /// Standalone thumbnail builder for virtual `List` closures.
 ///
 /// Returns an image element when the URL is present and already cached in
-/// `loaded_images`, otherwise falls back to a named icon.
-pub fn build_thumbnail<'a>(
-    loaded_images: &HashMap<String, cosmic::widget::image::Handle>,
+/// `loaded_images`, otherwise falls back to a named icon.  Each cache hit
+/// also touches the LRU entry so visible items stay loaded.
+pub(crate) fn build_thumbnail<'a>(
+    loaded_images: &HandleCache,
     url: Option<&str>,
     fallback_icon: &'static str,
 ) -> Element<'a, Message> {
@@ -59,8 +59,8 @@ pub fn build_thumbnail<'a>(
 ///
 /// This contains the full row-building logic. The [`AppModel::track_row`]
 /// method delegates here.
-pub fn build_track_row<'a>(
-    loaded_images: &HashMap<String, cosmic::widget::image::Handle>,
+pub(crate) fn build_track_row<'a>(
+    loaded_images: &HandleCache,
     track: &Track,
     index: usize,
     opts: &TrackRowOptions,

@@ -52,5 +52,3 @@ pub use list_helpers::{
     fading_header_title, fading_panel_text, fading_standard_text, fading_suggested_text,
     fading_text_column, list_item, scrollable_element, scrollable_list,
 };
-
-pub use rows::{build_thumbnail, build_track_row};
