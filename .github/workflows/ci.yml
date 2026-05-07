@@ -73,7 +73,7 @@ jobs:
         uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4.0.0
 
       - name: Install cargo-llvm-cov
-        uses: taiki-e/install-action@8e6bcdad38b75e3ed7b36872031a94f7c61006cc # cargo-llvm-cov
+        uses: taiki-e/install-action@e5de28abeb52d916c5e5875d54b21a9e738b61ec # cargo-llvm-cov
 
       - name: Generate LCOV coverage report
         run: just coverage-summary && cargo llvm-cov report --lcov --output-path lcov.info --ignore-filename-regex '/tests?/|/target/'
