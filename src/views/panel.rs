@@ -152,12 +152,20 @@ impl AppModel {
 
             autosize::autosize(interactive, AUTOSIZE_MAIN_ID.clone()).into()
         } else {
-            // Nothing playing - just show the icon button
-            let icon_btn = self
-                .core
-                .applet
-                .icon_button("io.github.cosmic-applet-mare-symbolic")
-                .on_press(Message::TogglePopup);
+            // Nothing playing — build a custom button that mirrors what
+            // `applet.icon_button` does internally, but uses the *non-symbolic*
+            // size + colour variant so the brand icon shows in colour and
+            // fills the button like sibling running-app icons.  We keep the
+            // matching `suggested_padding` so the button retains its hover
+            // frame and matches the panel button height.
+            let icon_size = self.core.applet.suggested_size(false).0;
+            let (pad_h, pad_v) = self.core.applet.suggested_padding(false);
+            let icon_btn = button::custom(
+                cosmic::widget::icon::from_name("io.github.cosmic-applet-mare").size(icon_size),
+            )
+            .padding([pad_v, pad_h])
+            .class(cosmic::theme::Button::AppletIcon)
+            .on_press(Message::TogglePopup);
 
             // Wrap for scroll support even when not playing
             let interactive = widget::mouse_area(icon_btn)
