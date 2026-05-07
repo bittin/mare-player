@@ -145,9 +145,9 @@ coverage:
     fi
     THREADS=$(( $(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4) / 2 ))
     [ "$THREADS" -lt 1 ] && THREADS=1
+    rm -rf {{ coverage-dir }}
     mkdir -p {{ coverage-dir }}
     echo "Generating HTML coverage report"
-    rm -rf {{ coverage-dir }}
     cargo llvm-cov --all-features \
         --html \
         --ignore-filename-regex '/tests?/|/target/' \

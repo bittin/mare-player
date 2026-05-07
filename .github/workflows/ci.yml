@@ -46,3 +46,41 @@ jobs:
 
       - name: Run tests (applet + standalone)
         run: just test-matrix
+
+  coverage:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libdbus-1-dev \
+            libsecret-1-dev \
+            libxkbcommon-dev \
+            libpulse-dev \
+            libwayland-dev \
+            libinput-dev \
+            libudev-dev \
+            libseat-dev \
+            libexpat1-dev
+
+      - name: Install just
+        uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4.0.0
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@8e6bcdad38b75e3ed7b36872031a94f7c61006cc # cargo-llvm-cov
+
+      - name: Generate LCOV coverage report
+        run: just coverage-summary && cargo llvm-cov report --lcov --output-path lcov.info --ignore-filename-regex '/tests?/|/target/'
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@57e3a136b779b570ffcdbf80b3bdc90e7fab3de2 # v6.0.0
+        with:
+          files: lcov.info
+          token: ${{ secrets.CODECOV_TOKEN }}
+          fail_ci_if_error: false
