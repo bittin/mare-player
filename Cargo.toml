@@ -136,6 +136,14 @@ libcosmic = { git = "https://github.com/glima/libcosmic.git" }
 cosmic-config = { git = "https://github.com/glima/libcosmic.git" }
 cosmic-theme = { git = "https://github.com/glima/libcosmic.git" }
 
+# Pin tidlers to the glima fork's fix branch carrying:
+#   * fix(oauth): keep polling on HTTP 400 in wait_for_oauth
+#   * fix(oauth): surface non-pending device-grant errors instead of polling forever
+#   * fix(user): make User.facebook_uid optional
+# Without these three fixes the device-code OAuth flow is unusable.
+[patch.'https://github.com/tomkoid/tidlers.git']
+tidlers = { git = "https://github.com/glima/tidlers.git", branch = "fix/oauth-authorization-pending-on-400" }
+
 
 # ── packaging ────────────────────────────────────────────────────────
 
