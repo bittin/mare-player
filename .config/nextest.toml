@@ -1,0 +1,21 @@
+# Cargo nextest configuration.
+#
+# Defines distinct profiles per CI matrix entry so each writes its
+# own JUnit XML (otherwise consecutive runs in the same workspace
+# overwrite the file).  CI uploads both XMLs to Codecov Test
+# Analytics, which surfaces flaky-test trends, slow-test rankings,
+# and recent failures alongside coverage.
+#
+# Output paths:
+#   target/nextest/default/junit.xml     ← `cargo nextest run`
+#   target/nextest/applet/junit.xml      ← `cargo nextest run --profile applet`
+#   target/nextest/standalone/junit.xml  ← `cargo nextest run --profile standalone`
+
+[profile.default.junit]
+path = "junit.xml"
+
+[profile.applet.junit]
+path = "junit.xml"
+
+[profile.standalone.junit]
+path = "junit.xml"

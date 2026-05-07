@@ -124,10 +124,10 @@ test-matrix *args:
     #!/usr/bin/env bash
     set -euo pipefail
     echo "═══ Testing: panel-applet (default features) ═══"
-    just features='--all-features' test {{ args }}
+    just features='--all-features' test --profile applet {{ args }}
     echo ""
     echo "═══ Testing: standalone (no default features) ═══"
-    just features='--no-default-features' test {{ args }}
+    just features='--no-default-features' test --profile standalone {{ args }}
     echo ""
     echo "All feature combinations passed ✓"
 
