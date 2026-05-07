@@ -18,7 +18,7 @@ use reqwest::header::{AUTHORIZATION, HeaderMap, HeaderValue};
 use serde::Deserialize;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tidlers::{TidalClient, auth::init::TidalAuth, client::models::playback::AudioQuality};
+use tidlers::{TidalClient, auth::TidalAuth, client::models::playback::AudioQuality};
 use tokio::sync::Mutex;
 use tracing::{debug, error, info, warn};
 

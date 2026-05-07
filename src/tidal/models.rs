@@ -55,10 +55,12 @@ impl From<tidlers::client::models::track::Track> for Track {
             artist_id: Some(t.artist.id.to_string()),
             album_name: Some(t.album.title.clone()),
             album_id: Some(t.album.id.to_string()),
-            cover_url: Some(format!(
-                "https://resources.tidal.com/images/{}/320x320.jpg",
-                t.album.cover.replace('-', "/")
-            )),
+            cover_url: t.album.cover.as_ref().map(|c| {
+                format!(
+                    "https://resources.tidal.com/images/{}/320x320.jpg",
+                    c.replace('-', "/")
+                )
+            }),
             explicit: t.explicit,
             audio_quality: Some(t.audio_quality),
         }
@@ -124,9 +126,9 @@ pub struct Album {
     pub review: Option<String>,
 }
 
-/// Convert from tidlers AlbumInfoResponse type (full album info)
-impl From<tidlers::client::models::album::AlbumInfoResponse> for Album {
-    fn from(a: tidlers::client::models::album::AlbumInfoResponse) -> Self {
+/// Convert from tidlers AlbumResponse type (full album info)
+impl From<tidlers::client::models::album::AlbumResponse> for Album {
+    fn from(a: tidlers::client::models::album::AlbumResponse) -> Self {
         Self {
             id: a.id.to_string(),
             title: a.title,
@@ -318,9 +320,9 @@ impl Playlist {
     }
 }
 
-/// Convert from tidlers PlaylistInfo type (user playlists)
-impl From<tidlers::client::models::playlist::PlaylistInfo> for Playlist {
-    fn from(p: tidlers::client::models::playlist::PlaylistInfo) -> Self {
+/// Convert from tidlers PlaylistResponse type (user playlists)
+impl From<tidlers::client::models::playlist::PlaylistResponse> for Playlist {
+    fn from(p: tidlers::client::models::playlist::PlaylistResponse) -> Self {
         Self {
             uuid: p.uuid,
             title: p.title,
