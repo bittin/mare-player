@@ -1,6 +1,6 @@
 [package]
 name = "cosmic-applet-mare"
-version = "0.2.0"
+version = "0.2.2"
 edition = "2024"
 license = "MIT"
 authors = ["Maré Player authors"]
@@ -135,6 +135,7 @@ features = [
 libcosmic = { git = "https://github.com/glima/libcosmic.git" }
 cosmic-config = { git = "https://github.com/glima/libcosmic.git" }
 cosmic-theme = { git = "https://github.com/glima/libcosmic.git" }
+
 
 
 # ── packaging ────────────────────────────────────────────────────────

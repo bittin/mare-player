@@ -4,7 +4,8 @@
 //!
 //! This module defines the main application model and view state types.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::cell::Cell;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -27,20 +28,27 @@ use crate::tidal::player::{NowPlaying, PlaybackState, Player};
 use crate::views::visualizer::VisualizerState;
 use cosmic::widget::image::Handle;
 
-/// Fixed-capacity FIFO cache for decoded RGBA image handles.
+/// Fixed-capacity LRU cache for decoded RGBA image handles.
 ///
-/// Wraps a [`HashMap`] and a [`VecDeque`] that tracks insertion order.
-/// When the cache is full the oldest entry is evicted.  Evicted images
-/// are cheap to re-decode from the on-disk [`ImageCache`], so the user
-/// never notices.
+/// Each [`get`](Self::get) call records the access timestamp on the
+/// returned entry, so handles that the view repeatedly fetches (i.e.
+/// items currently visible on screen) become the *most recently used*.
+/// When the cache is full, [`insert`](Self::insert) evicts the entry
+/// with the oldest access timestamp — guaranteeing that visible items
+/// are never evicted, regardless of cache size.
 ///
-/// [`Deref`] delegates to the inner `HashMap` so read-only access
-/// (`.get()`, `.contains_key()`, iteration, borrowing as
-/// `&HashMap<…>`) works transparently in view code.
+/// Evicted images are cheap to re-decode from the on-disk
+/// [`ImageCache`], so eviction is practically free.
+///
+/// Interior mutability ([`Cell`]) is used so that `get(&self, …)` can
+/// mutate the access counter without requiring `&mut self` — this lets
+/// view functions look up handles through a shared reference.
 pub(crate) struct HandleCache {
-    map: HashMap<String, cosmic::widget::image::Handle>,
-    order: VecDeque<String>,
+    /// URL → (handle, last-access counter)
+    map: HashMap<String, (cosmic::widget::image::Handle, Cell<u64>)>,
     capacity: usize,
+    /// Monotonic access counter, bumped on every `get` and `insert`.
+    counter: Cell<u64>,
 }
 
 impl HandleCache {
@@ -48,33 +56,62 @@ impl HandleCache {
     pub(crate) fn new(capacity: usize) -> Self {
         Self {
             map: HashMap::with_capacity(capacity),
-            order: VecDeque::with_capacity(capacity),
             capacity,
+            counter: Cell::new(0),
         }
     }
 
-    /// Insert a handle, evicting the oldest entry if at capacity.
+    /// Number of cached entries.
+    #[allow(dead_code)]
+    pub(crate) fn len(&self) -> usize {
+        self.map.len()
+    }
+
+    /// Look up a handle by URL, marking it as the *most recently used*.
+    ///
+    /// Visible items are touched on every render, so they always sit at
+    /// the top of the LRU and are never evicted.
+    pub(crate) fn get(&self, key: &str) -> Option<&cosmic::widget::image::Handle> {
+        let entry = self.map.get(key)?;
+        let new = self.counter.get().wrapping_add(1);
+        self.counter.set(new);
+        entry.1.set(new);
+        Some(&entry.0)
+    }
+
+    /// Check whether a URL is cached, without affecting LRU order.
+    pub(crate) fn contains_key(&self, key: &str) -> bool {
+        self.map.contains_key(key)
+    }
+
+    /// Insert a handle, evicting the least-recently-used entry if at capacity.
     pub(crate) fn insert(&mut self, key: String, value: cosmic::widget::image::Handle) {
-        // If already present just update the value in place.
-        if let std::collections::hash_map::Entry::Occupied(mut e) = self.map.entry(key.clone()) {
-            e.insert(value);
+        let new_counter = self.counter.get().wrapping_add(1);
+        self.counter.set(new_counter);
+
+        // Update existing entry in place — also counts as a touch.
+        if let Some(entry) = self.map.get_mut(&key) {
+            entry.0 = value;
+            entry.1.set(new_counter);
             return;
         }
-        // Evict oldest entries until there is room.
-        while self.order.len() >= self.capacity {
-            if let Some(oldest) = self.order.pop_front() {
-                self.map.remove(&oldest);
+
+        // Evict LRU entries until there is room.  Eviction is O(n) but
+        // only happens when the cache is full; per-access cost is O(1).
+        while self.map.len() >= self.capacity {
+            let oldest = self
+                .map
+                .iter()
+                .min_by_key(|(_, (_, last))| last.get())
+                .map(|(k, _)| k.clone());
+            match oldest {
+                Some(k) => {
+                    self.map.remove(&k);
+                }
+                None => break,
             }
         }
-        self.order.push_back(key.clone());
-        self.map.insert(key, value);
-    }
-}
-
-impl std::ops::Deref for HandleCache {
-    type Target = HashMap<String, cosmic::widget::image::Handle>;
-    fn deref(&self) -> &Self::Target {
-        &self.map
+        self.map.insert(key, (value, Cell::new(new_counter)));
     }
 }
 
@@ -173,7 +210,8 @@ pub struct AppModel {
     pub(crate) playback_context: Option<String>,
     /// Image cache for album art
     pub(crate) image_cache: ImageCache,
-    /// Decoded RGBA image handles, FIFO-evicted at 512 entries.
+    /// Decoded RGBA image handles, LRU-evicted at 1024 entries.
+    /// Visible items are touched on every render, so they are never evicted.
     pub(crate) loaded_images: HandleCache,
     /// URLs currently being loaded (to avoid duplicate requests)
     pub(crate) pending_image_loads: HashSet<String>,

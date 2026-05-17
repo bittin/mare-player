@@ -18,7 +18,7 @@ use reqwest::header::{AUTHORIZATION, HeaderMap, HeaderValue};
 use serde::Deserialize;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tidlers::{TidalClient, auth::init::TidalAuth, client::models::playback::AudioQuality};
+use tidlers::{TidalClient, auth::TidalAuth, client::models::playback::AudioQuality};
 use tokio::sync::Mutex;
 use tracing::{debug, error, info, warn};
 
@@ -983,7 +983,11 @@ impl TidalAppClient {
     pub async fn start_oauth_flow(&mut self) -> TidalResult<DeviceCodeInfo> {
         info!("Starting OAuth device code flow");
 
-        let auth = TidalAuth::with_oauth();
+        let mut auth = TidalAuth::with_oauth();
+        // Pin to the "Android Automotive HiRes" client — the credentials
+        // upstream tidlers ships are rejected by TIDAL at /token.
+        auth.set_client_id("fX2JxdmntZWK0ixT".to_string());
+        auth.set_client_secret("1Nn9AfDAjxrgJFJbKNWLeAyKGVGmINuXPPLHVXAvxAg=".to_string());
         let client = TidalClient::new(&auth);
 
         match client.get_oauth_link().await {

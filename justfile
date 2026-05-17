@@ -124,10 +124,10 @@ test-matrix *args:
     #!/usr/bin/env bash
     set -euo pipefail
     echo "═══ Testing: panel-applet (default features) ═══"
-    just features='--all-features' test {{ args }}
+    just features='--all-features' test --profile applet {{ args }}
     echo ""
     echo "═══ Testing: standalone (no default features) ═══"
-    just features='--no-default-features' test {{ args }}
+    just features='--no-default-features' test --profile standalone {{ args }}
     echo ""
     echo "All feature combinations passed ✓"
 
@@ -145,9 +145,9 @@ coverage:
     fi
     THREADS=$(( $(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4) / 2 ))
     [ "$THREADS" -lt 1 ] && THREADS=1
+    rm -rf {{ coverage-dir }}
     mkdir -p {{ coverage-dir }}
     echo "Generating HTML coverage report"
-    rm -rf {{ coverage-dir }}
     cargo llvm-cov --all-features \
         --html \
         --ignore-filename-regex '/tests?/|/target/' \
