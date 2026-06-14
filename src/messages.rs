@@ -14,7 +14,9 @@ use tokio::sync::Mutex;
 use crate::config::{AudioQuality, Config};
 use crate::tidal::auth::DeviceCodeInfo;
 use crate::tidal::client::PlaybackUrl;
-use crate::tidal::models::{Album, Artist, FeedActivity, Mix, Playlist, SearchResults, Track};
+use crate::tidal::models::{
+    Album, Artist, FeedActivity, Mix, PlaybackSource, Playlist, SearchResults, Track,
+};
 use crate::tidal::mpris::{MprisCommand, MprisHandle};
 
 /// Result type for MPRIS service initialization.
@@ -117,8 +119,17 @@ pub enum Message {
     // Track Radio
     /// Show track radio view for a specific track
     ShowTrackRadio(Track),
-    /// Track radio tracks loaded
-    TrackRadioLoaded(Result<Vec<Track>, String>),
+    /// Track radio loaded: `(mix_id, tracks)`.  Track radio is a
+    /// track-seeded Mix; the mix id lets plays attribute as
+    /// `MIX:<mix_id>` so they surface in TIDAL's Recently Played.
+    TrackRadioLoaded(Result<(String, Vec<Track>), String>),
+
+    // Track Lyrics
+    /// Open the lyrics view for a specific track and kick off the fetch.
+    ShowLyrics(Track),
+    /// Lyrics fetch completed (`Ok(TrackLyrics::default())` for tracks
+    /// with no lyrics; only `Err` for genuine network/parse failures).
+    TrackLyricsLoaded(Result<crate::tidal::models::TrackLyrics, String>),
 
     // Track Detail (recommendations from a track)
     /// Show track detail view (more albums by artist, related albums, related artists)
@@ -197,10 +208,12 @@ pub enum Message {
     FollowArtistToggled(Result<(Artist, bool), String>),
 
     // Track actions
-    /// Play a list of tracks starting from a specific index, with optional context (playlist/album name)
-    PlayTrackList(Arc<[Track]>, usize, Option<String>),
-    /// Shuffle and play a list of tracks, with optional context (playlist/album name)
-    ShufflePlay(Arc<[Track]>, Option<String>),
+    /// Play a list of tracks starting from a specific index, with optional
+    /// container source (album/playlist/mix/etc.).  The source feeds both
+    /// the now-playing bar's display label and TIDAL play attribution.
+    PlayTrackList(Arc<[Track]>, usize, Option<PlaybackSource>),
+    /// Shuffle and play a list of tracks, with optional container source.
+    ShufflePlay(Arc<[Track]>, Option<PlaybackSource>),
     /// Play next track in queue
     NextTrack,
     /// Play previous track in queue

@@ -106,9 +106,9 @@ mod track_row_options_default {
     }
 
     #[test]
-    fn default_context_is_none() {
+    fn default_source_is_none() {
         let opts = TrackRowOptions::default();
-        assert!(opts.context.is_none());
+        assert!(opts.source.is_none());
     }
 
     #[test]
@@ -148,14 +148,18 @@ mod track_row_options_fields {
     use super::*;
 
     #[test]
-    fn can_set_context() {
+    fn can_set_source() {
+        use cosmic_applet_mare::tidal::models::{PlaybackSource, PlaybackSourceKind};
         let tracks: Vec<Track> = vec![];
         let opts = TrackRowOptions {
-            context: Some("My Playlist".to_string()),
+            source: Some(PlaybackSource::playlist("uuid-123", "My Playlist")),
             tracks: tracks.into(),
             ..Default::default()
         };
-        assert_eq!(opts.context, Some("My Playlist".to_string()));
+        let s = opts.source.as_ref().expect("source set");
+        assert_eq!(s.kind, PlaybackSourceKind::Playlist);
+        assert_eq!(s.id, "uuid-123");
+        assert_eq!(s.display_name, "My Playlist");
     }
 
     #[test]
@@ -532,6 +536,81 @@ mod radio_svg {
             || s.contains("<rect")
             || s.contains("<line");
         assert!(has_drawing, "RADIO_SVG should contain SVG drawing elements");
+    }
+}
+
+// ===========================================================================
+// LYRICS_SVG constant
+// ===========================================================================
+
+mod lyrics_svg {
+    use cosmic_applet_mare::views::components::LYRICS_SVG;
+
+    #[test]
+    fn lyrics_svg_is_nonempty() {
+        assert!(!LYRICS_SVG.is_empty());
+    }
+
+    #[test]
+    fn lyrics_svg_starts_with_svg_tag() {
+        let s = std::str::from_utf8(LYRICS_SVG).expect("LYRICS_SVG should be valid UTF-8");
+        assert!(
+            s.starts_with("<svg"),
+            "LYRICS_SVG should start with <svg, got: {}",
+            &s[..s.len().min(20)]
+        );
+    }
+
+    #[test]
+    fn lyrics_svg_ends_with_closing_tag() {
+        let s = std::str::from_utf8(LYRICS_SVG).expect("LYRICS_SVG should be valid UTF-8");
+        assert!(
+            s.trim_end().ends_with("</svg>"),
+            "LYRICS_SVG should end with </svg>"
+        );
+    }
+
+    #[test]
+    fn lyrics_svg_is_16x16() {
+        let s = std::str::from_utf8(LYRICS_SVG).expect("LYRICS_SVG should be valid UTF-8");
+        assert!(
+            s.contains("width=\"16\"") && s.contains("height=\"16\""),
+            "LYRICS_SVG should be 16x16"
+        );
+    }
+
+    #[test]
+    fn lyrics_svg_is_valid_utf8() {
+        assert!(
+            std::str::from_utf8(LYRICS_SVG).is_ok(),
+            "LYRICS_SVG should be valid UTF-8"
+        );
+    }
+
+    #[test]
+    fn lyrics_svg_contains_path_elements() {
+        let s = std::str::from_utf8(LYRICS_SVG).unwrap();
+        let has_drawing = s.contains("<path")
+            || s.contains("<circle")
+            || s.contains("<rect")
+            || s.contains("<line");
+        assert!(
+            has_drawing,
+            "LYRICS_SVG should contain SVG drawing elements"
+        );
+    }
+
+    #[test]
+    fn lyrics_svg_has_text_lines() {
+        // The icon's defining feature: three horizontal text lines
+        // suggesting lyric stanzas.  If a redesign removes them, the
+        // visual semantics break — force the test to catch it.
+        let s = std::str::from_utf8(LYRICS_SVG).unwrap();
+        let line_count = s.matches("<line").count();
+        assert!(
+            line_count >= 3,
+            "LYRICS_SVG should contain >=3 <line> elements (text lines), got {line_count}"
+        );
     }
 }
 

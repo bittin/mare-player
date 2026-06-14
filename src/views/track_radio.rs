@@ -31,6 +31,25 @@ impl AppModel {
 
         let tracks: Arc<[_]> = self.selected_radio_tracks.clone().into();
 
+        // Attribute plays as MIX:<mix_id> once the track-seeded mix has
+        // loaded -- this is the only sourceType that surfaces track-radio
+        // listening in TIDAL's Recently Played (rendered as a "Track
+        // Radio" tile via the mix's mixType=TRACK_MIX).  Before the mix
+        // resolves no playback can start (the list is empty), so the
+        // seed-track TRACK_RADIO fallback is purely defensive.
+        let radio_source = match (
+            &self.selected_radio_mix_id,
+            &self.selected_radio_source_track,
+        ) {
+            (Some(mix_id), _) => {
+                crate::tidal::models::PlaybackSource::mix(mix_id.clone(), title.clone())
+            }
+            (None, Some(seed)) => {
+                crate::tidal::models::PlaybackSource::track_radio(seed.id.clone(), title.clone())
+            }
+            (None, None) => crate::tidal::models::PlaybackSource::ad_hoc(title.clone()),
+        };
+
         let header = widget::Row::new()
             .push(
                 button::icon(widget::icon::from_name("go-previous-symbolic"))
@@ -46,7 +65,7 @@ impl AppModel {
                     } else {
                         Some(Message::ShufflePlay(
                             Arc::clone(&tracks),
-                            Some(title.clone()),
+                            Some(radio_source.clone()),
                         ))
                     })
                     .padding(4),
@@ -60,10 +79,9 @@ impl AppModel {
             text(fl!("no-radio-tracks")).size(14).into()
         } else {
             let loaded_images = &self.loaded_images;
-            let context = Some(title);
             let opts = TrackRowOptions {
                 tracks: Arc::clone(&self.track_list_arc),
-                context: context.clone(),
+                source: Some(radio_source),
                 show_radio_button: false,
                 ..Default::default()
             };

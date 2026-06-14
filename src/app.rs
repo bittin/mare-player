@@ -134,8 +134,13 @@ impl cosmic::Application for AppModel {
             feed_activities: Vec::new(),
             selected_mix_tracks: Vec::new(),
             selected_mix_name: None,
+            selected_mix_id: None,
             selected_radio_tracks: Vec::new(),
             selected_radio_source_track: None,
+            selected_radio_mix_id: None,
+            selected_lyrics_track: None,
+            selected_track_lyrics: None,
+            current_lyric_index: None,
             selected_detail_track: None,
             track_detail_artist_albums: Vec::new(),
             track_detail_related_artists: Vec::new(),
@@ -143,6 +148,7 @@ impl cosmic::Application for AppModel {
             selected_playlist_tracks: Vec::new(),
             selected_album_tracks: Vec::new(),
             selected_playlist_name: None,
+            selected_playlist_uuid: None,
             selected_album: None,
             selected_artist: None,
             selected_artist_top_tracks: Vec::new(),
@@ -161,7 +167,7 @@ impl cosmic::Application for AppModel {
             playback_queue_index: 0,
             shuffle_enabled: false,
             loop_status: crate::tidal::mpris::LoopStatus::None,
-            playback_context: None,
+            playback_source: None,
             image_cache: ImageCache::new(image_cache_max_mb),
             loaded_images: crate::state::HandleCache::new(1024),
             pending_image_loads: HashSet::new(),
@@ -180,6 +186,8 @@ impl cosmic::Application for AppModel {
             #[cfg(not(feature = "panel-applet"))]
             show_volume_popup: false,
             window_width: 0.0,
+            play_reporter: crate::tidal::play_reporter::PlayReporter::spawn(),
+            current_play: None,
             #[cfg(not(feature = "panel-applet"))]
             menu_key_binds: HashMap::new(),
         };
@@ -470,6 +478,7 @@ impl cosmic::Application for AppModel {
             | Message::MixesLoaded(_)
             | Message::MixTracksLoaded(_)
             | Message::TrackRadioLoaded(_)
+            | Message::TrackLyricsLoaded(_)
             | Message::TrackDetailArtistAlbumsLoaded(_)
             | Message::TrackDetailRelatedArtistsLoaded(_)
             | Message::TrackDetailRelatedAlbumsLoaded(_)
@@ -572,6 +581,10 @@ impl cosmic::Application for AppModel {
             // Data handlers - track radio
             Message::ShowTrackRadio(track) => self.handle_show_track_radio(track),
             Message::TrackRadioLoaded(result) => self.handle_track_radio_loaded(result),
+
+            // Data handlers - track lyrics
+            Message::ShowLyrics(track) => self.handle_show_lyrics(track),
+            Message::TrackLyricsLoaded(result) => self.handle_track_lyrics_loaded(result),
 
             // Data handlers - track detail (recommendations)
             Message::ShowTrackDetail(track) => self.handle_show_track_detail(track),

@@ -123,18 +123,42 @@ impl AppModel {
         )
     }
 
-    /// Load radio tracks for a specific track (similar/recommended tracks)
+    /// Load the track-seeded mix for a track (TIDAL's "Track Radio").
+    ///
+    /// Returns `(mix_id, tracks)` so the view can attribute plays as
+    /// `MIX:<mix_id>` — the attribution that surfaces track-radio
+    /// listening in TIDAL's Recently Played.  See
+    /// [`TidalAppClient::get_track_mix`](crate::tidal::client::TidalAppClient::get_track_mix).
     pub(crate) fn load_track_radio(&self, track_id: String) -> Task<cosmic::Action<Message>> {
         let client = self.tidal_client.clone();
         Task::perform(
             async move {
                 let client = client.lock().await;
                 client
-                    .get_track_radio(&track_id, None)
+                    .get_track_mix(&track_id)
                     .await
                     .map_err(|e| e.to_string())
             },
             |result| cosmic::Action::App(Message::TrackRadioLoaded(result)),
+        )
+    }
+
+    /// Load lyrics for a specific track.
+    ///
+    /// Returns an empty [`TrackLyrics`] (not an error) when TIDAL has
+    /// no lyrics; only genuine network/parse failures end in `Err`.
+    /// See [`TidalAppClient::get_track_lyrics`](crate::tidal::client::TidalAppClient::get_track_lyrics).
+    pub(crate) fn load_track_lyrics(&self, track_id: String) -> Task<cosmic::Action<Message>> {
+        let client = self.tidal_client.clone();
+        Task::perform(
+            async move {
+                let client = client.lock().await;
+                client
+                    .get_track_lyrics(&track_id)
+                    .await
+                    .map_err(|e| e.to_string())
+            },
+            |result| cosmic::Action::App(Message::TrackLyricsLoaded(result)),
         )
     }
 
@@ -570,18 +594,22 @@ impl AppModel {
         }
     }
 
-    /// Handle track radio loaded result
+    /// Handle track radio loaded result.
+    ///
+    /// Stores the backing mix id (for `MIX:<mix_id>` play attribution)
+    /// alongside the resolved track list.
     pub fn handle_track_radio_loaded(
         &mut self,
-        result: Result<Vec<Track>, String>,
+        result: Result<(String, Vec<Track>), String>,
     ) -> Task<cosmic::Action<Message>> {
         self.is_loading = false;
         match result {
-            Ok(tracks) => {
-                tracing::info!("Loaded {} track radio tracks", tracks.len());
+            Ok((mix_id, tracks)) => {
+                tracing::info!("Loaded track radio: mix={} tracks={}", mix_id, tracks.len());
                 let urls: Vec<String> = tracks.iter().filter_map(|t| t.cover_url.clone()).collect();
                 self.set_track_list(tracks.clone());
                 self.selected_radio_tracks = tracks;
+                self.selected_radio_mix_id = Some(mix_id);
                 self.load_images_for_urls(urls)
             }
             Err(e) => {
@@ -590,6 +618,40 @@ impl AppModel {
                 Task::none()
             }
         }
+    }
+
+    /// Handle lyrics loaded result.
+    ///
+    /// Stores the lyrics (or an empty `TrackLyrics` when TIDAL has
+    /// none) and recomputes `current_lyric_index` from the current
+    /// playback position so the UI is correct on first render — the
+    /// tick handler also keeps it fresh from there on.  Errors are
+    /// surfaced in the error banner but don't block the view; the
+    /// lyrics view falls back to its "failed to load" state.
+    pub fn handle_track_lyrics_loaded(
+        &mut self,
+        result: Result<crate::tidal::models::TrackLyrics, String>,
+    ) -> Task<cosmic::Action<Message>> {
+        match result {
+            Ok(lyrics) => {
+                tracing::info!(
+                    "Lyrics loaded: provider={:?} plain={} synced={} lines={}",
+                    lyrics.provider,
+                    lyrics.plain_text.is_some(),
+                    lyrics.is_synced(),
+                    lyrics.lrc_lines.len()
+                );
+                self.current_lyric_index = lyrics.line_index_at(self.playback_position);
+                self.selected_track_lyrics = Some(lyrics);
+            }
+            Err(e) => {
+                tracing::error!("Failed to load lyrics: {}", e);
+                self.error_message = Some(format!("Failed to load lyrics: {}", e));
+                // Leave selected_track_lyrics = None; the view shows the
+                // "failed to load" empty state in that case.
+            }
+        }
+        Task::none()
     }
 
     /// Handle "More Albums by {Artist}" loaded for the track detail view.
