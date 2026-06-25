@@ -21,7 +21,9 @@ use crate::image_cache::ImageCache;
 use crate::menu::TidalMenuAction;
 use crate::tidal::auth::DeviceCodeInfo;
 use crate::tidal::client::TidalAppClient;
-use crate::tidal::models::{Album, Artist, FeedActivity, Mix, Playlist, SearchResults, Track};
+use crate::tidal::models::{
+    Album, Artist, ExplorePage, ExploreRow, FeedActivity, Mix, Playlist, SearchResults, Track,
+};
 use crate::tidal::mpris::{MprisCommand, MprisHandle};
 use crate::tidal::play_history::PlayHistory;
 use crate::tidal::play_reporter::{InProgressPlay, PlayReporter};
@@ -182,6 +184,16 @@ pub struct AppModel {
     pub(crate) user_followed_artists: Vec<Artist>,
     /// Feed activities (new releases from followed artists)
     pub(crate) feed_activities: Vec<FeedActivity>,
+    /// Currently loaded Explore (TIDAL browse) page, if any (kept for its title).
+    pub(crate) explore_page: Option<ExplorePage>,
+    /// Flattened rows of the current Explore page, rendered via the virtual
+    /// `List` widget so long browse pages scroll smoothly.
+    pub(crate) explore_rows: list::Content<ExploreRow>,
+    /// Whether an Explore page fetch is in flight.
+    pub(crate) explore_loading: bool,
+    /// Back-stack of Explore page slugs, so the in-view back button can
+    /// pop from a sub-page (genre/mood) to its parent.
+    pub(crate) explore_stack: Vec<String>,
     /// Tracks for the currently selected mix
     pub(crate) selected_mix_tracks: Vec<Track>,
     /// Name of the currently selected mix
@@ -245,6 +257,12 @@ pub struct AppModel {
     pub(crate) session_restore_attempted: bool,
     /// Audio player
     pub(crate) player: Option<Player>,
+    /// Active video pipeline (GStreamer), when a music video is playing.
+    /// `Some` ⇒ the now-playing pane shows live video instead of the spectrum.
+    pub(crate) video_player: Option<crate::video::VideoPlayer>,
+    /// When the video-mode overlay controls were last shown (by interaction).
+    /// They fade out a few seconds after the last pointer movement.
+    pub(crate) video_controls_shown_at: Option<std::time::Instant>,
     /// Current playback state
     pub(crate) playback_state: PlaybackState,
     /// Currently playing track info
@@ -379,6 +397,8 @@ pub enum ViewState {
     Lyrics,
     /// Track detail view (recommendations: more albums by artist, related albums, related artists)
     TrackDetail,
+    /// Explore (TIDAL browse pages: featured, genres, moods, decades)
+    Explore,
     /// Favorite tracks view
     FavoriteTracks,
     /// Feed view (new releases from followed artists)

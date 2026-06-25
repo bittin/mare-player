@@ -132,6 +132,10 @@ impl cosmic::Application for AppModel {
             user_mixes: Vec::new(),
             user_followed_artists: Vec::new(),
             feed_activities: Vec::new(),
+            explore_page: None,
+            explore_rows: cosmic::iced::widget::list::Content::default(),
+            explore_loading: false,
+            explore_stack: Vec::new(),
             selected_mix_tracks: Vec::new(),
             selected_mix_name: None,
             selected_mix_id: None,
@@ -160,6 +164,8 @@ impl cosmic::Application for AppModel {
             error_message: None,
             session_restore_attempted: false,
             player,
+            video_player: None,
+            video_controls_shown_at: None,
             playback_state: PlaybackState::Stopped,
             now_playing: None,
             playback_position: 0.0,
@@ -206,8 +212,7 @@ impl cosmic::Application for AppModel {
             let main_id = app.core().main_window_id();
             tracing::info!("Standalone title setup: main_window_id = {:?}", main_id);
             if let Some(id) = main_id {
-                let task = app.set_window_title("Maré Player".to_string(), id);
-                task
+                app.set_window_title("Maré Player".to_string(), id)
             } else {
                 tracing::warn!(
                     "main_window_id() returned None — cannot set window title during init"
@@ -331,14 +336,20 @@ impl cosmic::Application for AppModel {
         //   • poll engine events (track-ended, errors, state transitions)
         //   • auto-hide the volume bar after ~1 s
         // 500 ms is more than enough for all of these.
-        let needs_tick = self.playback_state == PlaybackState::Playing
+        let video_active = self.video_player.is_some();
+        let needs_tick = video_active
+            || self.playback_state == PlaybackState::Playing
             || self.playback_state == PlaybackState::Loading
             || self.visualizer_state.needs_tick()
             || self.show_volume_bar;
 
         if needs_tick {
+            // Video needs frequent redraws to present new frames (~30 Hz);
+            // audio only needs ~2 Hz for the position slider.
+            let interval = if video_active { 33 } else { 500 };
             subs.push(
-                time::every(std::time::Duration::from_millis(500)).map(|_| Message::PlaybackTick),
+                time::every(std::time::Duration::from_millis(interval))
+                    .map(|_| Message::PlaybackTick),
             );
         }
 
@@ -484,6 +495,7 @@ impl cosmic::Application for AppModel {
             | Message::TrackDetailRelatedAlbumsLoaded(_)
             | Message::ProfilesLoaded(_)
             | Message::FeedLoaded(_)
+            | Message::ExploreLoaded(_)
             | Message::FollowArtistToggled(_) => {
                 tracing::debug!("update() received: {:?}", message);
             }
@@ -549,6 +561,7 @@ impl cosmic::Application for AppModel {
             }
             Message::ShowMixes => self.handle_show_mixes(),
             Message::ShowFeed => self.handle_show_feed(),
+            Message::ShowExplore => self.handle_show_explore(),
             Message::ShowPlaylists => self.handle_show_playlists(),
             Message::ShowAlbums => self.handle_show_albums(),
             Message::ShowFavoriteTracks => self.handle_show_favorite_tracks(),
@@ -605,6 +618,10 @@ impl cosmic::Application for AppModel {
             // Data handlers - feed
             Message::LoadFeed => self.handle_load_feed(),
             Message::FeedLoaded(result) => self.handle_feed_loaded(result),
+            Message::LoadExplorePage(slug) => self.handle_load_explore_page(slug),
+            Message::ExploreLoaded(result) => self.handle_explore_loaded(result),
+            Message::OpenExploreTarget(target) => self.handle_open_explore_target(target),
+            Message::ExploreBack => self.handle_explore_back(),
 
             // Data handlers - search
             Message::SearchQueryChanged(query) => self.handle_search_query_changed(query),
@@ -697,6 +714,11 @@ impl cosmic::Application for AppModel {
                 }
             }
             Message::PlaybackUrlReceived(result) => self.handle_playback_url_received(result),
+            Message::VideoUrlReceived(result) => self.handle_video_url_received(result),
+            Message::VideoInteraction => {
+                self.video_controls_shown_at = Some(std::time::Instant::now());
+                Task::none()
+            }
             Message::PreloadNextTrack => self.handle_preload_next_track(),
             Message::PreloadUrlReceived(result) => self.handle_preload_url_received(result),
             Message::GaplessTransition => self.handle_gapless_transition(),

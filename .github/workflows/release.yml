@@ -44,7 +44,7 @@ jobs:
     runs-on: ${{ matrix.os }}
 
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
       - name: Install system dependencies
         run: |
@@ -58,15 +58,23 @@ jobs:
             libinput-dev \
             libudev-dev \
             libseat-dev \
-            libexpat1-dev
+            libexpat1-dev \
+            libgstreamer1.0-dev \
+            libgstreamer-plugins-base1.0-dev
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
 
       - name: Install packaging tools
-        uses: cargo-bins/cargo-binstall@aaa84a43aec4955a42c5ffc65d258961e39f276e # v1.19.1
+        uses: cargo-bins/cargo-binstall@30b5ca8b54e1dcffd9548bc87ede1531310fdc67 # v1.20.0
 
-      - run: cargo binstall --no-confirm just cargo-deb cargo-generate-rpm
+      # `just` and `cargo-deb` ship prebuilt binaries that binstall can fetch.
+      # `cargo-generate-rpm` does not advertise binstall metadata, so binstall
+      # falls back to a bare `cargo install` (no `--locked`) that breaks on
+      # unpinned transitive deps. Install it from source with `--locked` so it
+      # uses the crate's own tested Cargo.lock.
+      - run: cargo binstall --no-confirm just cargo-deb
+      - run: cargo install cargo-generate-rpm --locked
 
       - name: Build release binary
         run: |
@@ -121,7 +129,7 @@ jobs:
 
     steps:
       - name: Checkout (for tag annotation)
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 1
           ref: ${{ github.ref }}
@@ -159,7 +167,7 @@ jobs:
           bundle-path: release/attestation.sigstore.json
 
       - name: Create GitHub release
-        uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda # v2
+        uses: softprops/action-gh-release@718ea10b132b3b2eba29c1007bb80653f286566b # v2
         with:
           name: ${{ steps.meta.outputs.release_name }}
           draft: false
