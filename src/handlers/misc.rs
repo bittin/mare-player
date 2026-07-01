@@ -86,42 +86,36 @@ impl AppModel {
         self.loaded_images.insert(url, handle);
     }
 
-    /// Handle set audio cache max size in megabytes
-    pub fn handle_set_audio_cache_max_mb(&mut self, mb: u32) {
-        tracing::info!("Setting audio cache max size to {} MB", mb);
-        self.config.audio_cache_max_mb = mb;
-
-        // Propagate to the client's DiskCache so eviction uses the new limit
-        {
-            let mut client = self.tidal_client.blocking_lock();
-            client.set_audio_cache_max_mb(mb);
-        }
-
-        // Persist config to disk
-        if let Ok(config_context) =
-            cosmic::cosmic_config::Config::new(Self::APP_ID, Config::VERSION)
-            && let Err(e) = self.config.write_entry(&config_context)
-        {
-            tracing::error!("Failed to save audio cache config: {}", e);
-        }
-    }
-
-    /// Handle clear audio cache
-    pub fn handle_clear_audio_cache(&mut self) {
-        tracing::info!("Clearing audio cache");
-        let client = self.tidal_client.blocking_lock();
-        client.clear_audio_cache();
-    }
-
     /// Handle clear play history
     pub fn handle_clear_history(&mut self) {
         tracing::info!("Clearing play history");
         self.play_history.clear();
-        let client = self.tidal_client.blocking_lock();
-        self.play_history.save(client.api_cache());
-        drop(client);
+        self.persist_play_history();
         // Clear virtual list if currently on history view
         self.set_track_list(Vec::new());
+    }
+
+    /// Persist the play history to the cache database (fire-and-forget).
+    ///
+    /// Serialises the in-memory history and spawns a background write to the
+    /// `kv` table. A no-op when the database isn't open yet, or when called
+    /// outside a tokio runtime.
+    pub(crate) fn persist_play_history(&self) {
+        let Some(db) = self.cache_db.clone() else {
+            return;
+        };
+        let Some(bytes) = self.play_history.to_json() else {
+            return;
+        };
+        match tokio::runtime::Handle::try_current() {
+            Ok(handle) => {
+                handle.spawn(async move {
+                    db.put_kv(crate::tidal::play_history::HISTORY_KEY, &bytes)
+                        .await;
+                });
+            }
+            Err(_) => tracing::debug!("no tokio runtime; play history not persisted"),
+        }
     }
 
     /// Handle set audio quality
@@ -129,12 +123,6 @@ impl AppModel {
         &mut self,
         quality: AudioQuality,
     ) -> Task<cosmic::Action<Message>> {
-        // Only a genuine, user-initiated switch should invalidate the
-        // audio cache — detect it before mutating config.  Never fires on
-        // startup (session restore sets quality via the client directly,
-        // not this handler), and the guard skips a no-op re-select.
-        let quality_changed = self.config.audio_quality != quality;
-
         // Update local config
         self.config.audio_quality = quality;
 
@@ -153,14 +141,6 @@ impl AppModel {
             async move {
                 let mut client = client.lock().await;
                 client.set_audio_quality(tidlers_quality).await;
-                if quality_changed {
-                    // Cache keys embed the quality (`{track_id}_{quality:?}`),
-                    // so after a switch every cached .dat/.rg is at the old
-                    // quality: unservable (new key hashes differently) and
-                    // indistinguishable on disk.  Drop it now instead of
-                    // letting it linger until 5 GB LRU eviction.
-                    client.clear_audio_cache();
-                }
             },
             |_| cosmic::Action::App(Message::ClearError), // No-op on completion
         )
@@ -172,7 +152,8 @@ impl AppModel {
         let track_title = track.title.clone();
         let album_id = track.album_id.clone();
         let album_title = track.album_name.clone();
-        self.view_state = ViewState::SharePrompt(track_id, track_title, album_id, album_title);
+        self.view_state =
+            ViewState::SharePrompt(track_id, track_title, album_id, album_title, track.is_video);
     }
 
     /// Handle share track
@@ -180,11 +161,22 @@ impl AppModel {
         &mut self,
         track_id: String,
         track_title: String,
+        is_video: bool,
     ) -> Task<cosmic::Action<Message>> {
-        let tidal_url = format!("https://tidal.com/browse/track/{}", track_id);
-        tracing::info!("Generating song.link for track: {}", track_title);
         // Return to previous view
         self.view_state = ViewState::Main;
+
+        if is_video {
+            // song.link (Odesli) indexes songs/albums, not music videos, so a
+            // `/track/<video_id>` lookup 400s. Share the direct TIDAL video
+            // link instead (copied + opened, no cross-platform resolution).
+            let url = format!("https://tidal.com/browse/video/{}", track_id);
+            tracing::info!("Sharing TIDAL video link for: {}", track_title);
+            return self.copy_and_open_share(url);
+        }
+
+        let tidal_url = format!("https://tidal.com/browse/track/{}", track_id);
+        tracing::info!("Generating song.link for track: {}", track_title);
         Task::perform(
             async move { crate::helpers::generate_songlink(&tidal_url).await },
             |result| cosmic::Action::App(Message::ShareLinkGenerated(result)),
@@ -212,6 +204,31 @@ impl AppModel {
         self.view_state = ViewState::Main;
     }
 
+    /// Copy `url` to the clipboard, open it in the browser, and show a brief
+    /// confirmation. Shared by the song.link result handler and the direct
+    /// video-link share path.
+    fn copy_and_open_share(&mut self, url: String) -> Task<cosmic::Action<Message>> {
+        let url_for_clipboard = url.clone();
+        let url_for_browser = url.clone();
+        tokio::spawn(async move {
+            if let Err(e) = crate::helpers::copy_to_clipboard(&url_for_clipboard).await {
+                tracing::warn!("Failed to copy to clipboard: {}", e);
+            }
+        });
+        tokio::spawn(async move {
+            if let Err(e) = crate::helpers::open_in_browser(&url_for_browser).await {
+                tracing::warn!("Failed to open in browser: {}", e);
+            }
+        });
+        self.error_message = Some(format!("Link copied & opened: {}", url));
+        Task::perform(
+            async {
+                tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+            },
+            |_| cosmic::Action::App(Message::ClearError),
+        )
+    }
+
     /// Handle share link generated
     pub fn handle_share_link_generated(
         &mut self,
@@ -220,28 +237,7 @@ impl AppModel {
         match result {
             Ok(url) => {
                 tracing::info!("Song.link generated: {}", url);
-                // Copy to clipboard and open in browser
-                let url_for_clipboard = url.clone();
-                let url_for_browser = url.clone();
-                tokio::spawn(async move {
-                    if let Err(e) = crate::helpers::copy_to_clipboard(&url_for_clipboard).await {
-                        tracing::warn!("Failed to copy to clipboard: {}", e);
-                    }
-                });
-                tokio::spawn(async move {
-                    if let Err(e) = crate::helpers::open_in_browser(&url_for_browser).await {
-                        tracing::warn!("Failed to open in browser: {}", e);
-                    }
-                });
-                // Show success message briefly
-                self.error_message = Some(format!("Link copied & opened: {}", url));
-                // Clear the message after a delay
-                Task::perform(
-                    async {
-                        tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
-                    },
-                    |_| cosmic::Action::App(Message::ClearError),
-                )
+                self.copy_and_open_share(url)
             }
             Err(e) => {
                 tracing::error!("Failed to generate share link: {}", e);

@@ -60,15 +60,14 @@ fn is_tidlers_network_error(e: &tidlers::error::TidalError) -> bool {
         || dbg.contains("No route to host")
 }
 
-/// Result of getting a playback URL - can be direct URL, DASH manifest, or cached file
+/// Result of getting a playback URL - either a direct streaming URL or a
+/// (temporary) DASH manifest file for FLAC/hi-res.
 #[derive(Debug, Clone)]
 pub enum PlaybackUrl {
     /// Direct streaming URL (for Low/High/Lossless quality)
     Direct(String, Option<f32>),
     /// Path to a temporary DASH manifest file (for HiRes quality)
     DashManifest(PathBuf, Option<f32>),
-    /// Path to a cached audio file on disk (already downloaded previously)
-    CachedFile(PathBuf, Option<f32>),
 }
 
 impl PlaybackUrl {
@@ -76,9 +75,7 @@ impl PlaybackUrl {
     pub fn as_url(&self) -> String {
         match self {
             PlaybackUrl::Direct(url, _) => url.clone(),
-            PlaybackUrl::DashManifest(path, _) | PlaybackUrl::CachedFile(path, _) => {
-                path.to_string_lossy().to_string()
-            }
+            PlaybackUrl::DashManifest(path, _) => path.to_string_lossy().to_string(),
         }
     }
 
@@ -87,17 +84,10 @@ impl PlaybackUrl {
         matches!(self, PlaybackUrl::DashManifest(..))
     }
 
-    /// Check if this is a cached file (play from disk, no download needed)
-    pub fn is_cached(&self) -> bool {
-        matches!(self, PlaybackUrl::CachedFile(..))
-    }
-
     /// Get the replay gain value in dB, if available from the TIDAL API.
     pub fn replay_gain_db(&self) -> Option<f32> {
         match self {
-            PlaybackUrl::Direct(_, rg)
-            | PlaybackUrl::DashManifest(_, rg)
-            | PlaybackUrl::CachedFile(_, rg) => *rg,
+            PlaybackUrl::Direct(_, rg) | PlaybackUrl::DashManifest(_, rg) => *rg,
         }
     }
 }
@@ -142,7 +132,14 @@ struct ApiTrackData {
     #[serde(default)]
     explicit: bool,
     audio_quality: Option<String>,
-    artist: ApiTrackArtist,
+    /// Null for some video items in playlists (and occasionally curated lists),
+    /// so this must stay optional or the whole response fails to deserialize.
+    /// Falls back to the first entry of `artists` when null.
+    #[serde(default)]
+    artist: Option<ApiTrackArtist>,
+    /// Full artist list; used as a fallback when the singular `artist` is null.
+    #[serde(default)]
+    artists: Vec<ApiTrackArtist>,
     /// Null for video items in playlists (and occasionally curated lists), so
     /// this must stay optional or the whole response fails to deserialize.
     #[serde(default)]
@@ -181,16 +178,22 @@ impl From<ApiTrackData> for Track {
             ),
             None => (None, None, t.image_id.map(|id| tidal_cover_url(&id))),
         };
+        // Primary artist: the singular `artist`, falling back to the first of
+        // the `artists` list when it's null (e.g. video items in playlists).
+        let (artist_name, artist_id) = match t.artist.or_else(|| t.artists.into_iter().next()) {
+            Some(a) => (
+                a.name.unwrap_or_else(|| "Unknown Artist".to_string()),
+                Some(a.id.to_string()),
+            ),
+            None => ("Unknown Artist".to_string(), None),
+        };
         Track {
             id: t.id.to_string(),
             title: t.title,
             duration: t.duration as u32,
             track_number: t.track_number,
-            artist_name: t
-                .artist
-                .name
-                .unwrap_or_else(|| "Unknown Artist".to_string()),
-            artist_id: Some(t.artist.id.to_string()),
+            artist_name,
+            artist_id,
             album_name,
             album_id,
             cover_url,
@@ -302,12 +305,8 @@ pub struct TidalAppClient {
     auth_manager: AuthManager,
     /// Current audio quality setting
     audio_quality: AudioQuality,
-    /// Disk cache for DASH manifest files (size-limited, LRU-evicted)
+    /// Disk cache for the small DASH manifest files handed to GStreamer.
     dash_cache: DiskCache,
-    /// Disk cache for downloaded audio/song files (size-limited, LRU-evicted)
-    audio_cache: DiskCache,
-    /// Disk cache for API response JSON (playlists, albums, tracks, etc.)
-    api_cache: DiskCache,
 }
 
 impl Default for TidalAppClient {
@@ -428,200 +427,13 @@ impl TidalAppClient {
 
     /// Create a new TidalAppClient
     pub fn new() -> Self {
-        Self::new_with_audio_cache_mb(2000)
-    }
-
-    /// Create a new TidalAppClient with a specific audio cache size
-    pub fn new_with_audio_cache_mb(audio_cache_max_mb: u32) -> Self {
         Self {
             client: Arc::new(Mutex::new(None)),
             auth_manager: AuthManager::new(),
             audio_quality: AudioQuality::High,
-            // DASH manifests are small XML files (a few KB each); 10 MB is plenty
+            // DASH manifests are small XML files (a few KB each); 10 MB is plenty.
             dash_cache: DiskCache::xdg("dash", 10),
-            // Audio files: songs cached on disk for instant replay
-            audio_cache: DiskCache::xdg("audio", audio_cache_max_mb),
-            // API responses: playlists, albums, tracks JSON (small, 50 MB)
-            api_cache: DiskCache::xdg("api", 50),
         }
-    }
-
-    /// Create a client with all caches rooted under `base_dir`.
-    ///
-    /// Intended for tests so each test gets an isolated directory and
-    /// parallel runs never interfere with each other.
-    pub fn new_with_cache_dir(base_dir: &std::path::Path, audio_cache_max_mb: u32) -> Self {
-        Self {
-            client: Arc::new(Mutex::new(None)),
-            auth_manager: AuthManager::new(),
-            audio_quality: AudioQuality::High,
-            dash_cache: DiskCache::new(base_dir.join("dash"), 10),
-            audio_cache: DiskCache::new(base_dir.join("audio"), audio_cache_max_mb),
-            api_cache: DiskCache::new(base_dir.join("api"), 50),
-        }
-    }
-
-    /// Get a reference to the audio cache (for saving downloaded audio from the engine)
-    pub fn audio_cache(&self) -> &DiskCache {
-        &self.audio_cache
-    }
-
-    /// Get a reference to the API cache
-    pub fn api_cache(&self) -> &DiskCache {
-        &self.api_cache
-    }
-
-    /// Build the audio cache key for a track ID and the current quality setting
-    pub fn audio_cache_key(&self, track_id: &str) -> String {
-        format!("{}_{:?}", track_id, self.audio_quality)
-    }
-
-    /// Minimum size (in bytes) for a cached audio file to be considered valid.
-    ///
-    /// When the user skips tracks quickly, in-flight downloads are aborted and
-    /// the partial data may have been saved to disk before the abort-guard was
-    /// added.  A real FLAC/AAC track is always well above 64 KB, so anything
-    /// smaller is almost certainly a truncated fragment left over from an
-    /// interrupted download.
-    const MIN_CACHED_AUDIO_BYTES: u64 = 64 * 1024;
-
-    /// Check if a track is already cached on disk. Returns the path if so.
-    ///
-    /// Files smaller than [`Self::MIN_CACHED_AUDIO_BYTES`] are treated as
-    /// corrupt/truncated leftovers from an aborted download: they are deleted
-    /// on the spot and `None` is returned so the caller fetches a fresh copy.
-    pub fn get_cached_audio_path(&self, track_id: &str) -> Option<PathBuf> {
-        let key = self.audio_cache_key(track_id);
-        let path = self.audio_cache.hashed_path(&key, "dat");
-        if path.exists() {
-            // Reject suspiciously small files — they are almost certainly
-            // truncated fragments from an aborted download.
-            if let Ok(meta) = std::fs::metadata(&path)
-                && meta.len() < Self::MIN_CACHED_AUDIO_BYTES
-            {
-                warn!(
-                    "Cached audio for track {} is only {} bytes — removing truncated file {:?}",
-                    track_id,
-                    meta.len(),
-                    path,
-                );
-                let _ = std::fs::remove_file(&path);
-                // Also remove the replay-gain sidecar if present
-                let rg_path = self.audio_cache.hashed_path(&key, "rg");
-                let _ = std::fs::remove_file(&rg_path);
-                return None;
-            }
-            // Touch the file so LRU eviction keeps it alive
-            DiskCache::touch_path(&path);
-            info!("Audio cache hit for track {}", track_id);
-            Some(path)
-        } else {
-            None
-        }
-    }
-
-    /// Save replay-gain metadata as a tiny sidecar file next to the cached audio.
-    ///
-    /// The sidecar uses the same hash key as the audio file but with a `.rg`
-    /// extension, containing the dB value as plain ASCII (e.g. `"-7.4"`).
-    pub fn save_replay_gain(&self, track_id: &str, replay_gain_db: f32) {
-        let key = self.audio_cache_key(track_id);
-        let path = self.audio_cache.hashed_path(&key, "rg");
-        let data = format!("{}", replay_gain_db);
-        if let Err(e) = std::fs::write(&path, data.as_bytes()) {
-            warn!(
-                "Failed to save replay gain sidecar for track {}: {}",
-                track_id, e
-            );
-        } else {
-            debug!(
-                "Saved replay gain {:.1} dB for track {} at {:?}",
-                replay_gain_db, track_id, path
-            );
-        }
-    }
-
-    /// Load replay-gain metadata from the sidecar file for a cached track.
-    pub fn load_replay_gain(&self, track_id: &str) -> Option<f32> {
-        let key = self.audio_cache_key(track_id);
-        let path = self.audio_cache.hashed_path(&key, "rg");
-        match std::fs::read_to_string(&path) {
-            Ok(contents) => match contents.trim().parse::<f32>() {
-                Ok(db) => {
-                    debug!(
-                        "Loaded replay gain {:.1} dB for track {} from {:?}",
-                        db, track_id, path
-                    );
-                    Some(db)
-                }
-                Err(e) => {
-                    warn!("Invalid replay gain sidecar for track {}: {}", track_id, e);
-                    None
-                }
-            },
-            Err(_) => None,
-        }
-    }
-
-    /// Get the expected cache path for a track (for saving after download).
-    ///
-    /// This also pre-emptively evicts old cache entries to make room for the
-    /// incoming file based on a conservative size estimate for the current
-    /// quality setting.  The estimate doesn't need to be exact — on the next
-    /// app startup [`DiskCache::scan_size`] will re-scan the directory and
-    /// correct the counter.
-    ///
-    /// **Note:** the audio decoder writes files directly with `std::fs::write`
-    /// (bypassing [`DiskCache::put`]), so the in-memory byte counter drifts
-    /// after each download.  The playback handlers call
-    /// [`DiskCache::rescan`] on every track transition to reconcile the
-    /// counter with reality before the next `reserve_room` runs.
-    pub fn audio_cache_path_for(&self, track_id: &str) -> PathBuf {
-        let key = self.audio_cache_key(track_id);
-
-        // Size estimates by quality tier (typical 4-minute track).
-        // These only need to be in the right ballpark — the rescan on
-        // track transition keeps the counter honest, so a moderate
-        // over-estimate just means slightly earlier eviction of the
-        // oldest file rather than runaway cache growth.
-        //
-        //   Low      ~3 MB  (96 kbps AAC)
-        //   High    ~10 MB  (320 kbps AAC)
-        //   Lossless ~25 MB (FLAC 16-bit/44.1 kHz)
-        //   HiRes   ~40 MB  (FLAC 24-bit/96 kHz, most common tier)
-        let estimated_bytes: u64 = match self.audio_quality {
-            AudioQuality::Low => 5 * 1024 * 1024,
-            AudioQuality::High => 15 * 1024 * 1024,
-            AudioQuality::Lossless => 30 * 1024 * 1024,
-            AudioQuality::HiRes => 50 * 1024 * 1024,
-        };
-
-        self.audio_cache.reserve_room(estimated_bytes);
-        self.audio_cache.hashed_path(&key, "dat")
-    }
-
-    /// Get the total audio cache disk usage in bytes.
-    ///
-    /// Re-scans the directory first so the value reflects files written
-    /// directly to the cache path (bypassing [`DiskCache::put`]).
-    pub fn audio_cache_size(&self) -> u64 {
-        self.audio_cache.rescan();
-        self.audio_cache.current_bytes()
-    }
-
-    /// Get the audio cache max size in bytes
-    pub fn audio_cache_max(&self) -> u64 {
-        self.audio_cache.max_bytes()
-    }
-
-    /// Update the audio cache size limit at runtime (e.g. from settings).
-    pub fn set_audio_cache_max_mb(&mut self, max_mb: u32) {
-        self.audio_cache.set_max_mb(max_mb);
-    }
-
-    /// Clear the audio cache
-    pub fn clear_audio_cache(&self) {
-        self.audio_cache.clear();
     }
 
     /// Get the current authentication state
@@ -957,11 +769,11 @@ impl TidalAppClient {
     pub async fn start_oauth_flow(&mut self) -> TidalResult<DeviceCodeInfo> {
         info!("Starting OAuth device code flow");
 
-        let mut auth = TidalAuth::with_oauth();
-        // Pin to the "Android Automotive HiRes" client — the credentials
-        // upstream tidlers ships are rejected by TIDAL at /token.
-        auth.set_client_id("fX2JxdmntZWK0ixT".to_string());
-        auth.set_client_secret("1Nn9AfDAjxrgJFJbKNWLeAyKGVGmINuXPPLHVXAvxAg=".to_string());
+        // tidlers' default OAuth client is entitled to lossless/hi-res playback
+        // (playbackinfopostpaywall returns FLAC). Some TIDAL clients are capped
+        // at HIGH/AAC regardless of the account tier, so which client we
+        // authenticate as matters -- don't override it.
+        let auth = TidalAuth::with_oauth();
         let client = TidalClient::new(&auth);
 
         match client.get_oauth_link().await {
@@ -1144,6 +956,7 @@ impl TidalAppClient {
                 SearchType::Albums,
                 SearchType::Artists,
                 SearchType::Playlists,
+                SearchType::Videos,
             ],
             limit,
             ..Default::default()
@@ -1174,6 +987,35 @@ impl TidalAppClient {
                         playlists.items.into_iter().map(Playlist::from).collect();
                 }
 
+                // Convert videos into playable tracks (is_video = true). Videos
+                // have no album; their thumbnail is the `image` UUID, mirroring
+                // how playlist/Explore video items get their cover.
+                if let Some(videos) = results.videos {
+                    search_results.videos = videos
+                        .items
+                        .into_iter()
+                        .map(|v| {
+                            let artist = v.artists.first();
+                            Track {
+                                id: v.id.to_string(),
+                                title: v.title,
+                                duration: v.duration as u32,
+                                track_number: v.track_number.unwrap_or(0),
+                                artist_name: artist
+                                    .and_then(|a| a.name.clone())
+                                    .unwrap_or_else(|| "Unknown Artist".to_string()),
+                                artist_id: artist.and_then(|a| a.id).map(|id| id.to_string()),
+                                album_name: v.album.as_ref().map(|a| a.title.clone()),
+                                album_id: v.album.as_ref().map(|a| a.id.to_string()),
+                                cover_url: v.image.as_deref().map(tidal_cover_url),
+                                explicit: v.explicit,
+                                audio_quality: None,
+                                is_video: true,
+                            }
+                        })
+                        .collect();
+                }
+
                 Ok(search_results)
             }
             Err(e) => {
@@ -1181,75 +1023,6 @@ impl TidalAppClient {
                 Err(TidalError::RequestFailed(format!("{:?}", e)))
             }
         }
-    }
-
-    // ── API response caching helpers ────────────────────────────────────
-
-    /// Save an API response to disk cache as JSON
-    fn cache_api_response<T: serde::Serialize>(&self, cache_key: &str, data: &T) {
-        match serde_json::to_vec(data) {
-            Ok(json) => {
-                if let Err(e) = self.api_cache.put_hashed(cache_key, "json", &json) {
-                    warn!("Failed to cache API response '{}': {}", cache_key, e);
-                } else {
-                    debug!("Cached API response '{}' ({} bytes)", cache_key, json.len());
-                }
-            }
-            Err(e) => {
-                warn!("Failed to serialize API response '{}': {}", cache_key, e);
-            }
-        }
-    }
-
-    /// Load a cached API response from disk
-    fn load_cached_api_response<T: serde::de::DeserializeOwned>(
-        &self,
-        cache_key: &str,
-    ) -> Option<T> {
-        self.api_cache
-            .get_hashed(cache_key, "json")
-            .and_then(|data| {
-                serde_json::from_slice(&data)
-                    .map_err(|e| {
-                        warn!(
-                            "Failed to deserialize cached API response '{}': {}",
-                            cache_key, e
-                        );
-                        e
-                    })
-                    .ok()
-            })
-    }
-
-    /// Get cached user playlists (returns None if not cached)
-    pub fn get_cached_playlists(&self) -> Option<Vec<Playlist>> {
-        self.load_cached_api_response("user_playlists")
-    }
-
-    /// Get cached user favorite albums (returns None if not cached)
-    pub fn get_cached_albums(&self) -> Option<Vec<Album>> {
-        self.load_cached_api_response("user_albums")
-    }
-
-    /// Get cached user favorite tracks (returns None if not cached)
-    pub fn get_cached_favorite_tracks(&self) -> Option<Vec<Track>> {
-        self.load_cached_api_response("user_favorite_tracks")
-    }
-
-    /// Get cached user mixes (returns None if not cached)
-    pub fn get_cached_mixes(&self) -> Option<Vec<Mix>> {
-        self.load_cached_api_response("user_mixes")
-    }
-
-    /// Get cached followed artists (returns None if not cached)
-    pub fn get_cached_followed_artists(&self) -> Option<Vec<Artist>> {
-        self.load_cached_api_response("user_followed_artists")
-    }
-
-    /// Get cached playlist tracks (returns None if not cached)
-    pub fn get_cached_playlist_tracks(&self, playlist_uuid: &str) -> Option<Vec<Track>> {
-        let key = format!("playlist_tracks_{}", playlist_uuid);
-        self.load_cached_api_response(&key)
     }
 
     pub async fn get_user_playlists(
@@ -1269,8 +1042,6 @@ impl TidalAppClient {
             Ok(response) => {
                 let playlists: Vec<Playlist> =
                     response.items.into_iter().map(Playlist::from).collect();
-                // Cache the response for offline/instant startup
-                self.cache_api_response("user_playlists", &playlists);
                 Ok(playlists)
             }
             Err(e) => {
@@ -1345,8 +1116,6 @@ impl TidalAppClient {
             }
         }
 
-        // Cache the response for offline/instant startup
-        self.cache_api_response("user_favorite_tracks", &all_tracks);
         Ok(all_tracks)
     }
 
@@ -1414,8 +1183,6 @@ impl TidalAppClient {
             }
         }
 
-        // Cache the response for offline/instant startup
-        self.cache_api_response("user_albums", &all_albums);
         Ok(all_albums)
     }
 
@@ -1498,10 +1265,6 @@ impl TidalAppClient {
                 break;
             }
         }
-
-        // Cache the playlist tracks for offline/instant access
-        let cache_key = format!("playlist_tracks_{}", playlist_uuid);
-        self.cache_api_response(&cache_key, &all_tracks);
 
         Ok(all_tracks)
     }
@@ -1596,9 +1359,6 @@ impl TidalAppClient {
                     .into_iter()
                     .map(|item| Track::from(item.item))
                     .collect();
-                // Cache the album tracks for offline/instant access
-                let cache_key = format!("album_tracks_{}", album_id);
-                self.cache_api_response(&cache_key, &tracks);
                 Ok(tracks)
             }
             Err(e) => {
@@ -1634,21 +1394,7 @@ impl TidalAppClient {
     /// the DASH manifest to a temporary file and returns the path.
     ///
     /// For Low/High/Lossless quality, returns a direct streaming URL.
-    ///
-    /// If the track has been previously downloaded and cached on disk, returns
-    /// a `CachedFile` variant immediately without making any API call.
     pub async fn get_track_playback_url(&self, track_id: &str) -> TidalResult<PlaybackUrl> {
-        // Check audio cache first — if we already downloaded this track at this
-        // quality, skip the API call entirely and play from disk.
-        if let Some(cached_path) = self.get_cached_audio_path(track_id) {
-            let replay_gain_db = self.load_replay_gain(track_id);
-            info!(
-                "Audio cache hit for track {} — playing from {:?} (replay gain: {:?} dB)",
-                track_id, cached_path, replay_gain_db
-            );
-            return Ok(PlaybackUrl::CachedFile(cached_path, replay_gain_db));
-        }
-
         // Ensure token is valid before the operation
         self.ensure_valid_token().await?;
 
@@ -1730,11 +1476,6 @@ impl TidalAppClient {
             "Playback info received - audio_quality: {}, audio_mode: {}, manifest_mime_type: {}, replay_gain: {:?} dB, peak: {:?}",
             audio_quality, audio_mode, manifest_mime_type, replay_gain_db, peak_amplitude
         );
-
-        // Persist replay gain so cached playback can use it later
-        if let Some(rg) = replay_gain_db {
-            self.save_replay_gain(track_id, rg);
-        }
 
         let manifest_b64 = parsed
             .get("manifest")
@@ -1904,6 +1645,54 @@ impl TidalAppClient {
             }
             Err(e) => {
                 error!("Failed to get artist albums: {:?}", e);
+                Err(TidalError::RequestFailed(format!("{:?}", e)))
+            }
+        }
+    }
+
+    /// Get an artist's music videos as playable tracks (`is_video = true`).
+    ///
+    /// The video thumbnail comes from `imageId` via [`tidal_cover_url`], the
+    /// same cover path playlist/Explore/search video items use.
+    pub async fn get_artist_videos(
+        &self,
+        artist_id: &str,
+        limit: Option<u32>,
+    ) -> TidalResult<Vec<Track>> {
+        self.ensure_valid_token().await?;
+
+        let client_guard = self.client.lock().await;
+        let client = client_guard.as_ref().ok_or(TidalError::NotAuthenticated)?;
+
+        debug!("Getting videos for artist: {}", artist_id);
+
+        match client
+            .get_artist_videos(artist_id.to_string(), limit.map(|l| l as u64), None)
+            .await
+        {
+            Ok(response) => {
+                let videos = response
+                    .items
+                    .into_iter()
+                    .map(|v| Track {
+                        id: v.id.to_string(),
+                        title: v.title,
+                        duration: v.duration,
+                        track_number: v.track_number,
+                        artist_name: v.artist.name,
+                        artist_id: Some(v.artist.id.to_string()),
+                        album_name: v.album.as_ref().map(|a| a.title.clone()),
+                        album_id: v.album.as_ref().map(|a| a.id.to_string()),
+                        cover_url: v.image_id.as_deref().map(tidal_cover_url),
+                        explicit: v.explicit,
+                        audio_quality: None,
+                        is_video: true,
+                    })
+                    .collect();
+                Ok(videos)
+            }
+            Err(e) => {
+                error!("Failed to get artist videos: {:?}", e);
                 Err(TidalError::RequestFailed(format!("{:?}", e)))
             }
         }
@@ -2608,8 +2397,6 @@ impl TidalAppClient {
         mixes.retain(|m| seen.insert(m.id.clone()));
 
         info!("Found {} unique mixes from home feed", mixes.len());
-        // Cache the response for offline/instant startup
-        self.cache_api_response("user_mixes", &mixes);
         Ok(mixes)
     }
 
@@ -2680,8 +2467,16 @@ impl TidalAppClient {
     /// sub-page slug (genre/mood/decade) obtained from a [`PageLink`].  A
     /// full `apiPath` like `pages/genre_hip_hop` is normalised to its slug.
     ///
-    /// tidlers has no pages API, so this is a hand-built request mirroring the
+    /// tidlers now exposes a pages API (`TidalClient::get_page`), but it
+    /// deserializes into a strict `PageResponse` whose `PageModule` makes
+    /// `description`, `width`, and `pagedList` non-optional — so one unexpected
+    /// module (e.g. a promo banner without a paged list) would fail the whole
+    /// page, unlike this defensive hand-built parse. So we keep mirroring the
     /// official web client (`GET /v1/pages/{path}?deviceType=BROWSER&...`).
+    ///
+    /// TODO: adopt `client.get_page(slug)` once tidlers makes those page-module
+    /// fields optional (or otherwise degrades gracefully), dropping this
+    /// hand-rolled request + header spoofing + slug normalisation.
     pub async fn get_explore_page(&self, path: &str) -> TidalResult<ExplorePage> {
         self.ensure_valid_token().await?;
 
@@ -3257,8 +3052,6 @@ impl TidalAppClient {
         }
 
         info!("Loaded {} followed artists", artists.len());
-        // Cache the response for offline/instant startup
-        self.cache_api_response("user_followed_artists", &artists);
         Ok(artists)
     }
 
@@ -3300,7 +3093,6 @@ impl TidalAppClient {
             raw.into_iter().map(Self::from_tidlers_activity).collect();
 
         info!("Feed: loaded {} activities", activities.len());
-        self.cache_api_response("user_feed", &activities);
         Ok(activities)
     }
 
@@ -3412,5 +3204,68 @@ mod tests {
             )
         );
         assert_eq!(tracks[1].artist_name, "Another Artist");
+    }
+
+    #[test]
+    fn playlist_items_with_a_null_artist_video_still_parse() {
+        // The real-world failure from "Classic Hip-Hop Videos" under Explore:
+        // a video item whose singular `artist` is null. It must fall back to
+        // the `artists` list, and an item with neither must still parse.
+        let json = r#"{
+            "totalNumberOfItems": 2,
+            "items": [
+                {
+                    "item": {
+                        "id": 456,
+                        "title": "A Music Video",
+                        "duration": 240,
+                        "artist": null,
+                        "artists": [{ "id": 7, "name": "Video Artist" }],
+                        "album": null,
+                        "imageId": "7bd9a4c2-424a-49cf-afd9-31f6e526a71e"
+                    },
+                    "type": "video"
+                },
+                {
+                    "item": {
+                        "id": 789,
+                        "title": "An Artist-less Video",
+                        "duration": 100,
+                        "artist": null,
+                        "album": null
+                    },
+                    "type": "video"
+                }
+            ]
+        }"#;
+
+        let parsed: ApiPaginatedResponse<ApiItemWrapper<ApiTrackData>> =
+            serde_json::from_str(json).expect("null-artist video item should parse");
+
+        let tracks: Vec<Track> = parsed
+            .items
+            .into_iter()
+            .filter_map(|w| {
+                let is_video = w.item_type.as_deref() == Some("video");
+                w.item.map(|it| {
+                    let mut t = Track::from(it);
+                    t.is_video = is_video;
+                    t
+                })
+            })
+            .collect();
+
+        assert_eq!(tracks.len(), 2);
+
+        // Null `artist` falls back to the first of `artists`.
+        assert_eq!(tracks[0].title, "A Music Video");
+        assert_eq!(tracks[0].artist_name, "Video Artist");
+        assert_eq!(tracks[0].artist_id.as_deref(), Some("7"));
+        assert!(tracks[0].is_video);
+
+        // No artist at all degrades gracefully rather than failing the parse.
+        assert_eq!(tracks[1].title, "An Artist-less Video");
+        assert_eq!(tracks[1].artist_name, "Unknown Artist");
+        assert_eq!(tracks[1].artist_id, None);
     }
 }

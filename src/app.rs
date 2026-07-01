@@ -11,10 +11,7 @@ use crate::config::Config;
 use crate::image_cache::ImageCache;
 #[cfg(not(feature = "panel-applet"))]
 use crate::menu;
-use crate::tidal::{
-    client::TidalAppClient,
-    player::{PlaybackState, Player},
-};
+use crate::tidal::{client::TidalAppClient, player::PlaybackState};
 use crate::views::visualizer::VisualizerState;
 use cosmic::cosmic_config::{self, CosmicConfigEntry};
 use cosmic::iced::keyboard::Key;
@@ -69,42 +66,27 @@ impl cosmic::Application for AppModel {
             })
             .unwrap_or_default();
 
-        // Initialize audio player
+        // Initialize the spectrum analyzer that the now-playing visualizer
+        // reads. The playback pipeline's PCM tap feeds it; created at 44.1 kHz
+        // with one band per visualizer bar (no oversampling).
         let mut visualizer_state = VisualizerState::new();
-        let player = match Player::new() {
-            Ok(p) => {
-                tracing::info!("Audio player initialized");
-                // Apply saved volume from config
-                let saved_volume = config.volume_level.clamp(0.0, 1.0);
-                if let Err(e) = p.set_volume(saved_volume) {
-                    tracing::warn!(
-                        "Failed to set initial volume to {:.0}%: {}",
-                        saved_volume * 100.0,
-                        e
-                    );
-                } else {
-                    tracing::info!("Restored volume to {:.0}%", saved_volume * 100.0);
-                }
-                // Give the visualizer widget a direct handle to the spectrum
-                // analyzer so it can self-animate without going through
-                // update() → view().
-                visualizer_state.set_analyzer(p.spectrum_analyzer());
-                Some(p)
-            }
-            Err(e) => {
-                tracing::warn!("Failed to initialize audio player: {}", e);
-                None
-            }
-        };
+        visualizer_state.set_analyzer(crate::audio::spectrum::SharedSpectrumAnalyzer::with_bands(
+            44100, 12,
+        ));
 
         let image_cache_max_mb = config.image_cache_max_mb;
-        let audio_cache_max_mb = config.audio_cache_max_mb;
         let saved_volume = config.volume_level.clamp(0.0, 1.0);
 
-        // Build the single TidalAppClient up-front so we can load persisted
-        // play history from its API cache *before* moving it into the Arc.
-        let client = TidalAppClient::new_with_audio_cache_mb(audio_cache_max_mb);
-        let play_history = crate::tidal::play_history::PlayHistory::load(client.api_cache());
+        // The TidalAppClient is built up-front (it owns the DASH-manifest disk
+        // cache and is shared via an Arc). Play history is loaded from the
+        // cache database asynchronously once it opens (see
+        // `Message::CacheDbReady`); it starts empty here.
+        let client = TidalAppClient::new();
+        let play_history = crate::tidal::play_history::PlayHistory::new();
+
+        // Channel for events streamed back from the popped-out video child
+        // process (`mare-video-window`); drained by a subscription.
+        let (video_window_tx, video_window_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
 
         // `app` is only mutated in standalone mode (`app.set_window_title`);
         // in panel-applet mode the binding is never written.
@@ -145,6 +127,7 @@ impl cosmic::Application for AppModel {
             selected_lyrics_track: None,
             selected_track_lyrics: None,
             current_lyric_index: None,
+            now_playing_lyrics: None,
             selected_detail_track: None,
             track_detail_artist_albums: Vec::new(),
             track_detail_related_artists: Vec::new(),
@@ -157,15 +140,22 @@ impl cosmic::Application for AppModel {
             selected_artist: None,
             selected_artist_top_tracks: Vec::new(),
             selected_artist_albums: Vec::new(),
+            selected_artist_videos: Vec::new(),
             favorite_album_ids: HashSet::new(),
             followed_artist_ids: HashSet::new(),
             nav_stack: Vec::new(),
             is_loading: true,
             error_message: None,
             session_restore_attempted: false,
-            player,
             video_player: None,
+            video_window: None,
+            current_video_url: None,
+            video_window_rx: Some(Arc::new(Mutex::new(video_window_rx))),
+            video_window_tx,
+            media_player: None,
+            gst_transitions_seen: 0,
             video_controls_shown_at: None,
+            video_resume_target: None,
             playback_state: PlaybackState::Stopped,
             now_playing: None,
             playback_position: 0.0,
@@ -175,6 +165,7 @@ impl cosmic::Application for AppModel {
             loop_status: crate::tidal::mpris::LoopStatus::None,
             playback_source: None,
             image_cache: ImageCache::new(image_cache_max_mb),
+            cache_db: None,
             loaded_images: crate::state::HandleCache::new(1024),
             pending_image_loads: HashSet::new(),
             thumbnail_request_rx: None,
@@ -238,7 +229,30 @@ impl cosmic::Application for AppModel {
             },
         );
 
-        (app, Task::batch([mpris_task, title_task]))
+        // Open the embedded cache database (turso) off the main thread. On
+        // success the handle is delivered via `CacheDbReady` and wired into the
+        // image cache + view cache; on failure caching simply stays disabled.
+        let cache_db_task = Task::perform(
+            async {
+                let path = dirs::cache_dir()
+                    .unwrap_or_else(|| std::path::PathBuf::from("."))
+                    .join("cosmic-applet-mare")
+                    .join("cache.db");
+                if let Some(parent) = path.parent() {
+                    let _ = tokio::fs::create_dir_all(parent).await;
+                }
+                match crate::cache::Db::open(&path).await {
+                    Ok(db) => Some(db),
+                    Err(e) => {
+                        tracing::warn!("cache db open failed; caching disabled: {e}");
+                        None
+                    }
+                }
+            },
+            |db| cosmic::Action::App(Message::CacheDbReady(db)),
+        );
+
+        (app, Task::batch([mpris_task, title_task, cache_db_task]))
     }
 
     /// Track the current window size so views can scale text limits, etc.
@@ -434,6 +448,34 @@ impl cosmic::Application for AppModel {
             ));
         }
 
+        // Popped-out video child events: drain the channel fed by the child's
+        // stdout reader thread and dispatch `VideoWindowEvent` per line.
+        if let Some(rx) = &self.video_window_rx {
+            struct VideoRx(Arc<Mutex<tokio::sync::mpsc::UnboundedReceiver<String>>>);
+
+            impl std::hash::Hash for VideoRx {
+                fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+                    Arc::as_ptr(&self.0).hash(state);
+                }
+            }
+
+            subs.push(Subscription::run_with(
+                VideoRx(rx.clone()),
+                |data: &VideoRx| {
+                    let rx = data.0.clone();
+                    cosmic::iced::stream::channel(16, async move |mut channel| {
+                        let mut rx = rx.lock().await;
+                        while let Some(line) = rx.recv().await {
+                            if channel.send(Message::VideoWindowEvent(line)).await.is_err() {
+                                break;
+                            }
+                        }
+                        futures_util::future::pending().await
+                    })
+                },
+            ));
+        }
+
         Subscription::batch(subs)
     }
 
@@ -463,8 +505,10 @@ impl cosmic::Application for AppModel {
             | Message::FavoriteTracksFilterChanged(_)
             | Message::AdjustVolume(_)
             | Message::SetVolume(_)
+            | Message::VideoWindowEvent(_)
             | Message::ArtistTopTracksLoaded(_)
             | Message::ArtistAlbumsLoaded(_)
+            | Message::ArtistVideosLoaded(_)
             | Message::ToggleVolumePopup
             | Message::CloseVolumePopup
             | Message::Surface(_) => {}
@@ -598,6 +642,10 @@ impl cosmic::Application for AppModel {
             // Data handlers - track lyrics
             Message::ShowLyrics(track) => self.handle_show_lyrics(track),
             Message::TrackLyricsLoaded(result) => self.handle_track_lyrics_loaded(result),
+            Message::NowPlayingLyricsChecked(track_id, has) => {
+                self.handle_now_playing_lyrics_checked(track_id, has);
+                Task::none()
+            }
 
             // Data handlers - track detail (recommendations)
             Message::ShowTrackDetail(track) => self.handle_show_track_detail(track),
@@ -655,6 +703,7 @@ impl cosmic::Application for AppModel {
             Message::ArtistInfoLoaded(result) => self.handle_artist_info_loaded(result),
             Message::ArtistTopTracksLoaded(result) => self.handle_artist_top_tracks_loaded(result),
             Message::ArtistAlbumsLoaded(result) => self.handle_artist_albums_loaded(result),
+            Message::ArtistVideosLoaded(result) => self.handle_artist_videos_loaded(result),
 
             // Data handlers - favorites
             Message::LoadFavoriteTracks => self.handle_load_favorite_tracks(),
@@ -726,6 +775,8 @@ impl cosmic::Application for AppModel {
             Message::SeekDebounced(version) => self.handle_seek_debounced(version),
             Message::TogglePlayPause => self.handle_toggle_play_pause(),
             Message::StopPlayback => self.handle_stop_playback(),
+            Message::ToggleVideoWindow => self.handle_toggle_video_window(),
+            Message::VideoWindowEvent(line) => self.handle_video_window_event(line),
             Message::PlaybackTick => self.handle_playback_tick(),
 
             // Misc handlers - errors and images
@@ -741,14 +792,6 @@ impl cosmic::Application for AppModel {
 
             // Misc handlers - settings
             Message::SetAudioQuality(quality) => self.handle_set_audio_quality(quality),
-            Message::SetAudioCacheMaxMb(mb) => {
-                self.handle_set_audio_cache_max_mb(mb);
-                Task::none()
-            }
-            Message::ClearAudioCache => {
-                self.handle_clear_audio_cache();
-                Task::none()
-            }
             Message::ClearHistory => {
                 self.handle_clear_history();
                 Task::none()
@@ -759,8 +802,8 @@ impl cosmic::Application for AppModel {
                 self.handle_show_share_prompt(track);
                 Task::none()
             }
-            Message::ShareTrack(track_id, track_title) => {
-                self.handle_share_track(track_id, track_title)
+            Message::ShareTrack(track_id, track_title, is_video) => {
+                self.handle_share_track(track_id, track_title, is_video)
             }
             Message::ShareAlbum(album_id, album_title) => {
                 self.handle_share_album(album_id, album_title)
@@ -774,6 +817,43 @@ impl cosmic::Application for AppModel {
             // Misc handlers - MPRIS
             Message::MprisServiceStarted(result) => self.handle_mpris_service_started(result),
             Message::MprisCommand(cmd) => self.handle_mpris_command(cmd),
+
+            // Cache database finished opening at startup
+            Message::CacheDbReady(db) => {
+                if let Some(db) = db {
+                    tracing::info!("cache database ready");
+                    self.image_cache.set_db(db.clone());
+                    self.cache_db = Some(db.clone());
+                    // Load persisted play history from the database.
+                    return Task::perform(
+                        async move {
+                            db.get_kv(crate::tidal::play_history::HISTORY_KEY)
+                                .await
+                                .and_then(|b| serde_json::from_slice(&b).ok())
+                                .unwrap_or_default()
+                        },
+                        |entries| cosmic::Action::App(Message::PlayHistoryLoaded(entries)),
+                    );
+                }
+                Task::none()
+            }
+
+            // Persisted play history loaded from the cache database
+            Message::PlayHistoryLoaded(entries) => {
+                // Adopt the persisted history only if nothing has been recorded
+                // yet this session, so we never clobber an in-session play that
+                // happened during the brief window before the DB opened.
+                if self.play_history.is_empty() && !entries.is_empty() {
+                    self.play_history.set_entries(entries);
+                    if self.view_state == crate::state::ViewState::History {
+                        self.rebuild_history_track_list();
+                    }
+                }
+                Task::none()
+            }
+
+            // Fire-and-forget / cache-miss no-op
+            Message::Noop => Task::none(),
 
             // Volume control
             Message::AdjustVolume(delta) => self.handle_adjust_volume(delta),

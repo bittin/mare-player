@@ -27,7 +27,7 @@ use crate::tidal::models::{
 use crate::tidal::mpris::{MprisCommand, MprisHandle};
 use crate::tidal::play_history::PlayHistory;
 use crate::tidal::play_reporter::{InProgressPlay, PlayReporter};
-use crate::tidal::player::{NowPlaying, PlaybackState, Player};
+use crate::tidal::player::{NowPlaying, PlaybackState};
 use crate::views::visualizer::VisualizerState;
 use cosmic::widget::image::Handle;
 
@@ -219,6 +219,11 @@ pub struct AppModel {
     /// tick from `playback_position`.  `None` before the first line
     /// fires or when the lyrics view isn't synced.
     pub(crate) current_lyric_index: Option<usize>,
+    /// Lyrics availability for the currently-playing track, as
+    /// `(track_id, has_lyrics)`. `None` until the background check for the
+    /// current track returns. Drives whether the now-playing bar shows the
+    /// lyrics icon at all. Backed by the DB lyrics cache.
+    pub(crate) now_playing_lyrics: Option<(String, bool)>,
     /// The track whose detail/recommendations view is open
     pub(crate) selected_detail_track: Option<Track>,
     /// "More Albums by {Artist}" for the track detail view
@@ -243,6 +248,8 @@ pub struct AppModel {
     pub(crate) selected_artist_top_tracks: Vec<Track>,
     /// Selected artist's albums (discography)
     pub(crate) selected_artist_albums: Vec<Album>,
+    /// The selected artist's music videos (playable tracks with `is_video`).
+    pub(crate) selected_artist_videos: Vec<Track>,
     /// Set of album IDs that are in user's favorites
     pub(crate) favorite_album_ids: HashSet<String>,
     /// Set of artist IDs that the user follows
@@ -255,14 +262,41 @@ pub struct AppModel {
     pub(crate) error_message: Option<String>,
     /// Whether we've attempted to restore the session
     pub(crate) session_restore_attempted: bool,
-    /// Audio player
-    pub(crate) player: Option<Player>,
-    /// Active video pipeline (GStreamer), when a music video is playing.
+    /// Active video pipeline, when a music video is playing. Holds a
+    /// video-kind [`MediaPlayer`](crate::playback::MediaPlayer) (same unified
+    /// GStreamer engine as audio, with a video sink attached).
     /// `Some` ⇒ the now-playing pane shows live video instead of the spectrum.
-    pub(crate) video_player: Option<crate::video::VideoPlayer>,
+    pub(crate) video_player: Option<crate::playback::MediaPlayer>,
+    /// When a video is "popped out" into its own child window, the handle to
+    /// that `mare-video-window` process. `Some` ⇒ the now-playing panel shows
+    /// the audio-style bar and the video plays in the separate window; panel
+    /// transport delegates to the child over its stdin pipe. Panel-applet only.
+    pub(crate) video_window: Option<crate::playback::VideoWindowChild>,
+    /// Resolved HLS URL of the current music video. Stored so we can (a) hand it
+    /// to the child on pop-out and (b) rebuild the inline player on pop-in.
+    /// Set in `handle_video_url_received`.
+    pub(crate) current_video_url: Option<String>,
+    /// Receiver half of the child's stdout-event channel, drained by a
+    /// subscription (mirrors the MPRIS pattern). Wired at init.
+    pub(crate) video_window_rx: Option<Arc<Mutex<tokio::sync::mpsc::UnboundedReceiver<String>>>>,
+    /// Sender half of the child's stdout-event channel, cloned into each child
+    /// at spawn time so its reader thread can forward lines back to the app.
+    pub(crate) video_window_tx: tokio::sync::mpsc::UnboundedSender<String>,
+    /// Active GStreamer audio pipeline. `Some` ⇒ an audio track is streaming
+    /// through `MediaPlayer`.
+    pub(crate) media_player: Option<crate::playback::MediaPlayer>,
+    /// Number of gapless transitions already reflected in the queue/metadata
+    /// for the current `media_player`. Compared against `MediaPlayer::transitions`
+    /// to detect when a preloaded track has started playing.
+    pub(crate) gst_transitions_seen: u64,
     /// When the video-mode overlay controls were last shown (by interaction).
     /// They fade out a few seconds after the last pointer movement.
     pub(crate) video_controls_shown_at: Option<std::time::Instant>,
+    /// Resume target after a video pop-in: `(position_secs, set_at)`. While set,
+    /// the tick holds the displayed position here instead of letting the fresh
+    /// pipeline's pre-seek `0:00` flash on the slider; cleared once the deferred
+    /// seek lands (or after a short timeout fallback).
+    pub(crate) video_resume_target: Option<(f64, std::time::Instant)>,
     /// Current playback state
     pub(crate) playback_state: PlaybackState,
     /// Currently playing track info
@@ -284,6 +318,10 @@ pub struct AppModel {
     pub(crate) playback_source: Option<crate::tidal::models::PlaybackSource>,
     /// Image cache for album art
     pub(crate) image_cache: ImageCache,
+    /// Embedded cache database (turso): view-state snapshots, images, kv.
+    /// `None` until it finishes opening at startup, or if opening failed; all
+    /// cache reads/writes degrade gracefully to the network in that case.
+    pub(crate) cache_db: Option<crate::cache::Db>,
     /// Decoded RGBA image handles, LRU-evicted at 1024 entries.
     /// Visible items are touched on every render, so they are never evicted.
     pub(crate) loaded_images: HandleCache,
@@ -409,6 +447,6 @@ pub enum ViewState {
     Profiles,
     /// Settings view
     Settings,
-    /// Share prompt dialog (track_id, track_title, album_id, album_title)
-    SharePrompt(String, String, Option<String>, Option<String>),
+    /// Share prompt dialog (track_id, track_title, album_id, album_title, is_video)
+    SharePrompt(String, String, Option<String>, Option<String>, bool),
 }

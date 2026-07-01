@@ -44,6 +44,11 @@ pub enum Message {
     // Subscription/background events
     /// Subscription channel event (used for startup)
     SubscriptionChannel,
+    /// A no-op. Used by fire-and-forget cache writes and by view-cache reads
+    /// that miss, which have no UI effect.
+    Noop,
+    /// Persisted play history finished loading from the cache database.
+    PlayHistoryLoaded(Vec<crate::tidal::play_history::HistoryEntry>),
     /// Configuration was updated
     UpdateConfig(Config),
 
@@ -144,6 +149,10 @@ pub enum Message {
     /// Lyrics fetch completed (`Ok(TrackLyrics::default())` for tracks
     /// with no lyrics; only `Err` for genuine network/parse failures).
     TrackLyricsLoaded(Result<crate::tidal::models::TrackLyrics, String>),
+    /// Background availability check for the now-playing track finished:
+    /// `(track_id, has_lyrics)`. Drives whether the now-playing bar shows the
+    /// lyrics icon.
+    NowPlayingLyricsChecked(String, bool),
 
     // Track Detail (recommendations from a track)
     /// Show track detail view (more albums by artist, related albums, related artists)
@@ -202,6 +211,8 @@ pub enum Message {
     ArtistTopTracksLoaded(Result<Vec<Track>, String>),
     /// Artist albums (discography) loaded
     ArtistAlbumsLoaded(Result<Vec<Album>, String>),
+    /// Artist music videos loaded (playable tracks with `is_video`)
+    ArtistVideosLoaded(Result<Vec<Track>, String>),
 
     // Favorite tracks
     /// Load favorite tracks
@@ -245,6 +256,12 @@ pub enum Message {
     TogglePlayPause,
     /// Stop playback
     StopPlayback,
+    /// Toggle the video pop-out: play the video in a separate child window
+    /// (panel-applet only), or close it and return to inline theater mode.
+    ToggleVideoWindow,
+    /// A raw event line from the popped-out video child's stdout
+    /// (`position <s>`, `eos`, or `closed`).
+    VideoWindowEvent(String),
     /// Seek to position (0.0 to 100.0 percent) - debounced
     SeekTo(f64),
     /// Execute debounced seek (version)
@@ -279,8 +296,9 @@ pub enum Message {
     // Sharing (song.link integration)
     /// Show share prompt for current track
     ShowSharePrompt(Track),
-    /// Share a track via song.link (track_id, track_title)
-    ShareTrack(String, String),
+    /// Share a track: audio via song.link, a music video via a direct TIDAL
+    /// video link (song.link doesn't index videos). (track_id, track_title, is_video)
+    ShareTrack(String, String, bool),
     /// Share an album via song.link (album_id, album_title)
     ShareAlbum(String, String),
     /// Cancel share dialog
@@ -291,16 +309,15 @@ pub enum Message {
     // Settings
     /// Set audio quality preference
     SetAudioQuality(AudioQuality),
-    /// Set maximum audio cache size in megabytes
-    SetAudioCacheMaxMb(u32),
-    /// Clear the audio cache (downloaded songs)
-    ClearAudioCache,
     /// Clear the local play history
     ClearHistory,
 
     // MPRIS D-Bus integration
     /// MPRIS service started
     MprisServiceStarted(MprisStartResult),
+    /// The embedded cache database finished opening at startup (`None` if it
+    /// failed to open, in which case caching is disabled for the session).
+    CacheDbReady(Option<crate::cache::Db>),
     /// MPRIS command received
     MprisCommand(MprisCommand),
 

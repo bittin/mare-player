@@ -11,6 +11,10 @@ on:
 
 permissions: read-all
 
+env:
+  # Retry transient crates.io/registry download failures instead of failing.
+  CARGO_NET_RETRY: "10"
+
 jobs:
   analyze:
     name: Analyze (Rust)
@@ -30,7 +34,6 @@ jobs:
             libdbus-1-dev \
             libsecret-1-dev \
             libxkbcommon-dev \
-            libpulse-dev \
             libwayland-dev \
             libinput-dev \
             libudev-dev \

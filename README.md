@@ -18,20 +18,19 @@ via the `panel-applet` feature flag (enabled by default).
 <table align="center">
 <tr>
 <td align="center"><img src="resources/screenshot_applet.png" alt="Panel applet popup" width="320" /></td>
-<td align="center"><img src="resources/screenshot_standalone.png" alt="Standalone window" width="600" /></td>
+<td align="center"><img src="resources/screenshot_standalone.png" alt="Standalone mode window (playing video)" width="600" /></td>
 </tr>
 <tr>
 <td align="center"><sub>Panel Applet mode</sub></td>
-<td align="center"><sub>Standalone Window mode</sub></td>
+<td align="center"><sub>Standalone Window mode (playing video)</sub></td>
 </tr>
 </table>
 
 ## Features
 
-- **Hi-Res Audio Playback** — Stream FLAC up to 24-bit/192 kHz via
-  DASH, decoded with symphonia and output through PulseAudio
-  (pipewire-pulse on modern desktops)
-- **Music Video Playback** — Play TIDAL music videos (HLS, H.264/AAC)
+- **Hi-Res Audio Playback** — Stream FLAC up to 24-bit/192 kHz (DASH),
+  played through GStreamer (PipeWire/PulseAudio output)
+- **Music Video Playback** — Stream TIDAL music videos (HLS, H.264/AAC)
   through a GStreamer pipeline, shown in an auto-hiding "theater" HUD
   with the same clickable title/artist/context and transport controls
   as the audio bar
@@ -40,8 +39,8 @@ via the `panel-applet` feature flag (enabled by default).
 - **Volume Normalization** — Per-track replay-gain is applied so tracks
   play back at a consistent loudness
 - **Real-time Spectrum Visualizer** — FFT-based stereo frequency
-  display in the now-playing bar, driven by the audio engine *and* by
-  music-video audio (tapped from the GStreamer pipeline)
+  display in the now-playing bar, driven by a PCM tap on the GStreamer
+  playback pipeline (audio tracks and music videos alike)
 - **MPRIS D-Bus Integration** — Control playback from any MPRIS client
   (playerctl, KDE Connect, desktop media keys, etc.)
 - **Library Browsing** — Playlists, albums, artists, mixes & radio,
@@ -71,8 +70,9 @@ via the `panel-applet` feature flag (enabled by default).
 - **Secure Authentication** — OAuth device-code flow with credentials
   stored in the system keyring
 - **Persistent Sessions** — Automatic token refresh across reboots
-- **Disk Caching** — Songs and images are cached locally with
-  configurable size limits and LRU eviction
+- **Disk Caching** — Artwork is cached on disk with a configurable size
+  limit and LRU eviction; library data (playlists, albums, history,
+  lyrics) is cached in an embedded database for instant startup
 - **Audio Quality Selection** — Low, High, Lossless, or Hi-Res
   (Master)
 
@@ -84,25 +84,25 @@ Install the required system libraries before building:
 
 ```sh
 # Fedora / RHEL
-sudo dnf install dbus-devel libsecret-devel libxkbcommon-devel pulseaudio-libs-devel \
+sudo dnf install dbus-devel libsecret-devel libxkbcommon-devel \
     gstreamer1-devel gstreamer1-plugins-base-devel
 
 # Ubuntu / Debian
-sudo apt install libdbus-1-dev libsecret-1-dev libxkbcommon-dev libpulse-dev \
+sudo apt install libdbus-1-dev libsecret-1-dev libxkbcommon-dev \
     libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev
 
 # Arch
-sudo pacman -S dbus libsecret libxkbcommon libpulse gstreamer gst-plugins-base
+sudo pacman -S dbus libsecret libxkbcommon gstreamer gst-plugins-base
 ```
 
-#### Music-video playback (runtime)
+#### Playback codecs (runtime)
 
-Music videos are decoded with GStreamer. Playing them needs the HLS/MPEG-TS
-demuxers and an H.264 decoder from the good/bad/libav plugin sets (audio-only
-playback works without these):
+All playback — audio tracks **and** music videos — runs through GStreamer, so
+the demuxers/decoders from the good/bad/libav plugin sets are required at
+runtime: FLAC/AAC/MP3 for audio (DASH/HLS), and H.264 for video.
 
 ```sh
-# Fedora / RHEL (avdec_h264 comes from RPM Fusion's gstreamer1-libav)
+# Fedora / RHEL (avdec_* come from RPM Fusion's gstreamer1-libav)
 sudo dnf install gstreamer1-plugins-good gstreamer1-plugins-bad-free gstreamer1-libav
 
 # Ubuntu / Debian
@@ -167,7 +167,7 @@ just install-standalone
 - **MPRIS** — Use media keys or any MPRIS controller (e.g.
   `playerctl play-pause`)
 - **Sharing** — Share the currently playing track via song.link
-- **Settings** — Audio quality, cache management, and account info via
+- **Settings** — Audio quality and account info via
   the gear icon
 
 ## Configuration
@@ -178,7 +178,6 @@ settings:
 | Setting | Description | Default |
 |---|---|---|
 | Audio Quality | Low / High / Lossless / Hi-Res | Hi-Res |
-| Song Cache Limit | Max disk space for cached songs | 2 GB |
 | Image Cache Limit | Max disk space for cached artwork | 200 MB |
 
 The playback volume is also persisted across restarts.
@@ -223,8 +222,8 @@ A [justfile](./justfile) provides all common workflows:
 
 ```
 src/
-├── audio/          # Playback engine (gapless preload, replay-gain), symphonia decoder, PulseAudio output, DASH streaming, FFT spectrum
-├── video/          # GStreamer music-video pipeline: RGBA frame appsink + PCM tap feeding the visualizer
+├── playback/       # GStreamer engine (MediaPlayer): audio + video playbin, replay-gain volume, tee'd PCM tap, RGBA video appsink, gapless
+├── audio/          # FFT spectrum analyzer (fed by the playback PCM tap)
 ├── tidal/          # TIDAL API client, OAuth auth, player queue, MPRIS2 D-Bus interface
 ├── handlers/       # Message handlers: auth, data loading, navigation, playback, misc (images, sharing, MPRIS, screenshots)
 ├── views/          # UI views
@@ -240,14 +239,11 @@ src/
 |---|---|
 | [libcosmic](https://github.com/pop-os/libcosmic) | COSMIC application framework |
 | [tidlers](https://github.com/tomkoid/tidlers) | TIDAL API client |
-| [symphonia](https://github.com/pdeljanov/Symphonia) | Pure-Rust audio decoding (FLAC, AAC, MP3) |
-| [gstreamer-rs](https://gitlab.freedesktop.org/gstreamer/gstreamer-rs) | Music-video playback (HLS H.264/AAC pipeline) |
-| [libpulse-binding](https://crates.io/crates/libpulse-binding) | PulseAudio async API for playback & volume control |
+| [gstreamer-rs](https://gitlab.freedesktop.org/gstreamer/gstreamer-rs) | Playback engine for all audio and video (decode, stream, output, volume, seek, gapless) |
 | [rustfft](https://crates.io/crates/rustfft) | FFT for spectrum analysis |
 | [zbus](https://crates.io/crates/zbus) | D-Bus / MPRIS2 interface |
 | [keyring](https://crates.io/crates/keyring) | System credential storage |
-| [dash-mpd](https://crates.io/crates/dash-mpd) | DASH manifest parsing |
-| [reqwest](https://crates.io/crates/reqwest) | HTTP client for streaming |
+| [reqwest](https://crates.io/crates/reqwest) | HTTP client for API requests |
 | [image](https://crates.io/crates/image) | Decoding/processing album & video artwork |
 
 ## Acknowledgments

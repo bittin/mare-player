@@ -10,6 +10,9 @@ permissions: read-all
 
 env:
   CARGO_TERM_COLOR: always
+  # Retry transient crates.io/registry download failures (e.g. a dropped TLS
+  # connection: `curl [55] SSL_ERROR_SYSCALL`) instead of failing the job.
+  CARGO_NET_RETRY: "10"
 
 jobs:
   build:
@@ -25,7 +28,6 @@ jobs:
             libdbus-1-dev \
             libsecret-1-dev \
             libxkbcommon-dev \
-            libpulse-dev \
             libwayland-dev \
             libinput-dev \
             libudev-dev \
@@ -42,7 +44,7 @@ jobs:
         uses: taiki-e/install-action@8e6bcdad38b75e3ed7b36872031a94f7c61006cc # cargo-nextest
 
       - name: Build
-        run: cargo build --verbose
+        run: cargo build --workspace --verbose
 
       - name: Check/sanitize
         run: just check
@@ -73,7 +75,6 @@ jobs:
             libdbus-1-dev \
             libsecret-1-dev \
             libxkbcommon-dev \
-            libpulse-dev \
             libwayland-dev \
             libinput-dev \
             libudev-dev \

@@ -21,13 +21,21 @@ impl AppModel {
     /// Load user playlists from TIDAL
     pub(crate) fn load_playlists(&self) -> Task<cosmic::Action<Message>> {
         let client = self.tidal_client.clone();
+        let db = self.cache_db.clone();
         Task::perform(
             async move {
-                let client = client.lock().await;
-                client
-                    .get_user_playlists(Some(50), None)
-                    .await
-                    .map_err(|e| e.to_string())
+                let result = {
+                    let client = client.lock().await;
+                    client
+                        .get_user_playlists(Some(50), None)
+                        .await
+                        .map_err(|e| e.to_string())
+                };
+                if let Ok(ref playlists) = result {
+                    crate::handlers::view_cache::cache_put(db, "library:playlists", playlists)
+                        .await;
+                }
+                result
             },
             |result| cosmic::Action::App(Message::PlaylistsLoaded(result)),
         )
@@ -39,13 +47,21 @@ impl AppModel {
         playlist_uuid: String,
     ) -> Task<cosmic::Action<Message>> {
         let client = self.tidal_client.clone();
+        let db = self.cache_db.clone();
+        let key = format!("playlist:{playlist_uuid}:tracks");
         Task::perform(
             async move {
-                let client = client.lock().await;
-                client
-                    .get_playlist_tracks(&playlist_uuid, None, None)
-                    .await
-                    .map_err(|e| e.to_string())
+                let result = {
+                    let client = client.lock().await;
+                    client
+                        .get_playlist_tracks(&playlist_uuid, None, None)
+                        .await
+                        .map_err(|e| e.to_string())
+                };
+                if let Ok(ref tracks) = result {
+                    crate::handlers::view_cache::cache_put(db, &key, tracks).await;
+                }
+                result
             },
             |result| cosmic::Action::App(Message::PlaylistTracksLoaded(result)),
         )
@@ -54,13 +70,20 @@ impl AppModel {
     /// Load user favorite albums from TIDAL
     pub(crate) fn load_albums(&self) -> Task<cosmic::Action<Message>> {
         let client = self.tidal_client.clone();
+        let db = self.cache_db.clone();
         Task::perform(
             async move {
-                let client = client.lock().await;
-                client
-                    .get_user_favorite_albums(None)
-                    .await
-                    .map_err(|e| e.to_string())
+                let result = {
+                    let client = client.lock().await;
+                    client
+                        .get_user_favorite_albums(None)
+                        .await
+                        .map_err(|e| e.to_string())
+                };
+                if let Ok(ref albums) = result {
+                    crate::handlers::view_cache::cache_put(db, "library:albums", albums).await;
+                }
+                result
             },
             |result| cosmic::Action::App(Message::AlbumsLoaded(result)),
         )
@@ -69,13 +92,21 @@ impl AppModel {
     /// Load tracks for a specific album
     pub(crate) fn load_album_tracks(&self, album_id: String) -> Task<cosmic::Action<Message>> {
         let client = self.tidal_client.clone();
+        let db = self.cache_db.clone();
+        let key = format!("album:{album_id}:tracks");
         Task::perform(
             async move {
-                let client = client.lock().await;
-                client
-                    .get_album_tracks(&album_id, None, None)
-                    .await
-                    .map_err(|e| e.to_string())
+                let result = {
+                    let client = client.lock().await;
+                    client
+                        .get_album_tracks(&album_id, None, None)
+                        .await
+                        .map_err(|e| e.to_string())
+                };
+                if let Ok(ref tracks) = result {
+                    crate::handlers::view_cache::cache_put(db, &key, tracks).await;
+                }
+                result
             },
             |result| cosmic::Action::App(Message::AlbumTracksLoaded(result)),
         )
@@ -84,13 +115,20 @@ impl AppModel {
     /// Load user favorite tracks from TIDAL
     pub(crate) fn load_favorite_tracks(&self) -> Task<cosmic::Action<Message>> {
         let client = self.tidal_client.clone();
+        let db = self.cache_db.clone();
         Task::perform(
             async move {
-                let client = client.lock().await;
-                client
-                    .get_user_favorite_tracks(None)
-                    .await
-                    .map_err(|e| e.to_string())
+                let result = {
+                    let client = client.lock().await;
+                    client
+                        .get_user_favorite_tracks(None)
+                        .await
+                        .map_err(|e| e.to_string())
+                };
+                if let Ok(ref tracks) = result {
+                    crate::handlers::view_cache::cache_put(db, "favorites:tracks", tracks).await;
+                }
+                result
             },
             |result| cosmic::Action::App(Message::FavoriteTracksLoaded(result)),
         )
@@ -99,10 +137,17 @@ impl AppModel {
     /// Load personalized mixes from the TIDAL home feed
     pub(crate) fn load_mixes(&self) -> Task<cosmic::Action<Message>> {
         let client = self.tidal_client.clone();
+        let db = self.cache_db.clone();
         Task::perform(
             async move {
-                let client = client.lock().await;
-                client.get_mixes().await.map_err(|e| e.to_string())
+                let result = {
+                    let client = client.lock().await;
+                    client.get_mixes().await.map_err(|e| e.to_string())
+                };
+                if let Ok(ref mixes) = result {
+                    crate::handlers::view_cache::cache_put(db, "library:mixes", mixes).await;
+                }
+                result
             },
             |result| cosmic::Action::App(Message::MixesLoaded(result)),
         )
@@ -111,13 +156,21 @@ impl AppModel {
     /// Load tracks for a specific mix
     pub(crate) fn load_mix_tracks(&self, mix_id: String) -> Task<cosmic::Action<Message>> {
         let client = self.tidal_client.clone();
+        let db = self.cache_db.clone();
+        let key = format!("mix:{mix_id}:tracks");
         Task::perform(
             async move {
-                let client = client.lock().await;
-                client
-                    .get_mix_tracks(&mix_id)
-                    .await
-                    .map_err(|e| e.to_string())
+                let result = {
+                    let client = client.lock().await;
+                    client
+                        .get_mix_tracks(&mix_id)
+                        .await
+                        .map_err(|e| e.to_string())
+                };
+                if let Ok(ref tracks) = result {
+                    crate::handlers::view_cache::cache_put(db, &key, tracks).await;
+                }
+                result
             },
             |result| cosmic::Action::App(Message::MixTracksLoaded(result)),
         )
@@ -150,16 +203,79 @@ impl AppModel {
     /// See [`TidalAppClient::get_track_lyrics`](crate::tidal::client::TidalAppClient::get_track_lyrics).
     pub(crate) fn load_track_lyrics(&self, track_id: String) -> Task<cosmic::Action<Message>> {
         let client = self.tidal_client.clone();
+        let db = self.cache_db.clone();
+        let key = format!("lyrics:{track_id}");
         Task::perform(
             async move {
-                let client = client.lock().await;
-                client
-                    .get_track_lyrics(&track_id)
-                    .await
-                    .map_err(|e| e.to_string())
+                let result = {
+                    let client = client.lock().await;
+                    client
+                        .get_track_lyrics(&track_id)
+                        .await
+                        .map_err(|e| e.to_string())
+                };
+                // Cache the result (including "no lyrics") so the lyrics view
+                // and the now-playing icon check read it instantly next time.
+                if let Ok(ref lyrics) = result {
+                    crate::handlers::view_cache::cache_put(db, &key, lyrics).await;
+                }
+                result
             },
             |result| cosmic::Action::App(Message::TrackLyricsLoaded(result)),
         )
+    }
+
+    /// Refresh the now-playing lyrics-availability flag for `track`, so the
+    /// now-playing bar only shows the lyrics icon when the track actually has
+    /// lyrics. Reads the DB lyrics cache first and only hits the network on a
+    /// miss (caching the result, including "no lyrics").
+    pub(crate) fn refresh_now_playing_lyrics(
+        &mut self,
+        track: &Track,
+    ) -> Task<cosmic::Action<Message>> {
+        let track_id = track.id.clone();
+        // Unknown until the check returns — hide the icon in the meantime.
+        self.now_playing_lyrics = None;
+        let client = self.tidal_client.clone();
+        let db = self.cache_db.clone();
+        let key = format!("lyrics:{track_id}");
+        Task::perform(
+            async move {
+                // DB cache first; only hit the network on a miss.
+                if let Some(db) = &db
+                    && let Some(bytes) = db.get_view(&key).await
+                    && let Ok(lyrics) =
+                        serde_json::from_slice::<crate::tidal::models::TrackLyrics>(&bytes)
+                {
+                    return (track_id, !lyrics.is_empty());
+                }
+                let lyrics = {
+                    let client = client.lock().await;
+                    client.get_track_lyrics(&track_id).await.ok()
+                };
+                let has = match lyrics {
+                    Some(l) => {
+                        crate::handlers::view_cache::cache_put(db, &key, &l).await;
+                        !l.is_empty()
+                    }
+                    None => false,
+                };
+                (track_id, has)
+            },
+            |(id, has)| cosmic::Action::App(Message::NowPlayingLyricsChecked(id, has)),
+        )
+    }
+
+    /// Store the result of a now-playing lyrics-availability check: when it's
+    /// still the current track, update the flag the now-playing bar reads.
+    pub fn handle_now_playing_lyrics_checked(&mut self, track_id: String, has_lyrics: bool) {
+        if self
+            .now_playing
+            .as_ref()
+            .is_some_and(|np| np.track_id == track_id)
+        {
+            self.now_playing_lyrics = Some((track_id, has_lyrics));
+        }
     }
 
     /// Load albums by the track's artist (for "More Albums by {Artist}" section).
@@ -225,10 +341,17 @@ impl AppModel {
     /// Load feed activities (new releases from followed artists)
     pub(crate) fn load_feed(&self) -> Task<cosmic::Action<Message>> {
         let client = self.tidal_client.clone();
+        let db = self.cache_db.clone();
         Task::perform(
             async move {
-                let client = client.lock().await;
-                client.get_feed().await.map_err(|e| e.to_string())
+                let result = {
+                    let client = client.lock().await;
+                    client.get_feed().await.map_err(|e| e.to_string())
+                };
+                if let Ok(ref feed) = result {
+                    crate::handlers::view_cache::cache_put(db, "feed", feed).await;
+                }
+                result
             },
             |result| cosmic::Action::App(Message::FeedLoaded(result)),
         )
@@ -253,13 +376,20 @@ impl AppModel {
     /// Load followed artists (profiles)
     pub(crate) fn load_profiles(&self) -> Task<cosmic::Action<Message>> {
         let client = self.tidal_client.clone();
+        let db = self.cache_db.clone();
         Task::perform(
             async move {
-                let client = client.lock().await;
-                client
-                    .get_followed_artists()
-                    .await
-                    .map_err(|e| e.to_string())
+                let result = {
+                    let client = client.lock().await;
+                    client
+                        .get_followed_artists()
+                        .await
+                        .map_err(|e| e.to_string())
+                };
+                if let Ok(ref artists) = result {
+                    crate::handlers::view_cache::cache_put(db, "profiles", artists).await;
+                }
+                result
             },
             |result| cosmic::Action::App(Message::ProfilesLoaded(result)),
         )
@@ -451,13 +581,21 @@ impl AppModel {
     /// Fire a background task to fetch the album review text from TIDAL.
     pub(crate) fn load_album_review(&self, album_id: String) -> Task<cosmic::Action<Message>> {
         let client = self.tidal_client.clone();
+        let db = self.cache_db.clone();
+        let key = format!("album:{album_id}:review");
         Task::perform(
             async move {
-                let client = client.lock().await;
-                client
-                    .get_album_review(&album_id)
-                    .await
-                    .map_err(|e| e.to_string())
+                let result = {
+                    let client = client.lock().await;
+                    client
+                        .get_album_review(&album_id)
+                        .await
+                        .map_err(|e| e.to_string())
+                };
+                if let Ok(ref review) = result {
+                    crate::handlers::view_cache::cache_put(db, &key, review).await;
+                }
+                result
             },
             |result| cosmic::Action::App(Message::AlbumReviewLoaded(result)),
         )
@@ -521,6 +659,25 @@ impl AppModel {
             Err(e) => {
                 tracing::error!("Failed to load artist albums: {}", e);
                 self.error_message = Some(format!("Failed to load artist albums: {}", e));
+                Task::none()
+            }
+        }
+    }
+
+    /// Handle artist music videos loaded
+    pub fn handle_artist_videos_loaded(
+        &mut self,
+        result: Result<Vec<Track>, String>,
+    ) -> Task<cosmic::Action<Message>> {
+        match result {
+            Ok(videos) => {
+                let urls: Vec<String> = videos.iter().filter_map(|v| v.cover_url.clone()).collect();
+                self.selected_artist_videos = videos;
+                self.load_images_for_urls(urls)
+            }
+            Err(e) => {
+                tracing::error!("Failed to load artist videos: {}", e);
+                // Non-fatal: the videos section just stays hidden.
                 Task::none()
             }
         }

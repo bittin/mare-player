@@ -11,6 +11,8 @@ permissions: read-all
 env:
   CARGO_TERM_COLOR: always
   APP_ID: io.github.cosmic-applet-mare
+  # Retry transient crates.io/registry download failures instead of failing.
+  CARGO_NET_RETRY: "10"
 
 jobs:
   build:
@@ -53,7 +55,6 @@ jobs:
             libdbus-1-dev \
             libsecret-1-dev \
             libxkbcommon-dev \
-            libpulse-dev \
             libwayland-dev \
             libinput-dev \
             libudev-dev \
@@ -66,7 +67,7 @@ jobs:
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
 
       - name: Install packaging tools
-        uses: cargo-bins/cargo-binstall@30b5ca8b54e1dcffd9548bc87ede1531310fdc67 # v1.20.0
+        uses: cargo-bins/cargo-binstall@732870f031d2fb36309d0deaf36abcc704a7be65 # v1.20.1
 
       # `just` and `cargo-deb` ship prebuilt binaries that binstall can fetch.
       # `cargo-generate-rpm` does not advertise binstall metadata, so binstall
@@ -83,6 +84,10 @@ jobs:
           # copy it to the expected name
           if [ "${{ matrix.variant }}" = "standalone" ]; then
             cp target/release/cosmic-applet-mare target/release/${{ matrix.binary }}
+          else
+            # Applet: also build the out-of-process video-window companion
+            # (referenced by the applet .deb/.rpm assets and bundled below).
+            cargo build --release -p mare-video-window
           fi
 
       - name: Build .deb package
@@ -99,6 +104,10 @@ jobs:
           DIR=${{ matrix.pkg_name }}
           mkdir -p "$DIR"
           cp target/release/${{ matrix.binary }} "$DIR/"
+          # Applet bundles the out-of-process video-window companion too.
+          if [ "${{ matrix.variant }}" = "applet" ]; then
+            cp target/release/mare-video-window "$DIR/"
+          fi
           cp resources/app.desktop "$DIR/${{ env.APP_ID }}.desktop"
           cp resources/app.metainfo.xml "$DIR/${{ env.APP_ID }}.metainfo.xml"
           cp resources/icon.svg "$DIR/${{ env.APP_ID }}.svg"
@@ -128,10 +137,12 @@ jobs:
       attestations: write
 
     steps:
-      - name: Checkout (for tag annotation)
+      - name: Checkout (tag annotation + commit changelog)
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          fetch-depth: 1
+          # Full history + tags so we can build a changelog from the commits
+          # between this tag and the previous release.
+          fetch-depth: 0
           ref: ${{ github.ref }}
 
       - name: Resolve release name
@@ -157,7 +168,7 @@ jobs:
           shasum -a 256 *.deb *.rpm *.tar.gz > SHA256SUMS
 
       - name: Attest build provenance
-        uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4.1.0
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
         with:
           subject-path: |
             release/*.deb
@@ -166,12 +177,46 @@ jobs:
             release/SHA256SUMS
           bundle-path: release/attestation.sigstore.json
 
+      - name: Generate release notes from commits
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF#refs/tags/}"
+          PREV=$(git describe --tags --abbrev=0 --match 'v[0-9]*' "${TAG}^" 2>/dev/null || true)
+          if [ -n "$PREV" ]; then RANGE="${PREV}..${TAG}"; else RANGE="$TAG"; fi
+
+          # Emit a markdown section for commits whose conventional-commit type
+          # matches $1; strips the `type(scope):` prefix and bullets each line.
+          section() {
+            local body
+            body=$(git log "$RANGE" --no-merges --pretty='%s' \
+              | grep -iE "^($1)(\([^)]*\))?!?:" \
+              | sed -E 's/^[a-zA-Z]+(\([^)]*\))?!?:[[:space:]]*//' \
+              | sed -E 's/^(.)/- \U\1/' || true)
+            [ -n "$body" ] && printf '## %s\n\n%s\n\n' "$2" "$body" || true
+          }
+
+          {
+            section 'feat' '✨ Features'
+            section 'fix' '🐛 Bug Fixes'
+            section 'ui' '🎨 UI & UX'
+            section 'perf' '⚡ Performance'
+            section 'build|chore|refactor|test' '🔧 Maintenance & Dependencies'
+            section 'ci' '🤖 CI'
+            section 'docs' '📝 Documentation'
+            if [ -n "$PREV" ]; then
+              printf '**Full Changelog**: https://github.com/%s/compare/%s...%s\n' \
+                "$GITHUB_REPOSITORY" "$PREV" "$TAG"
+            fi
+          } > RELEASE_NOTES.md
+          echo '----- generated release notes -----'
+          cat RELEASE_NOTES.md
+
       - name: Create GitHub release
         uses: softprops/action-gh-release@718ea10b132b3b2eba29c1007bb80653f286566b # v2
         with:
           name: ${{ steps.meta.outputs.release_name }}
           draft: false
-          generate_release_notes: true
+          body_path: RELEASE_NOTES.md
           files: |
             release/*.deb
             release/*.rpm

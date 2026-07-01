@@ -29,11 +29,13 @@ use crate::messages::Message;
 use crate::state::{AppModel, ViewState};
 use crate::tidal::player::PlaybackState;
 use crate::views::components::{LYRICS_SVG, NOW_PLAYING_ART_SIZE, RADIO_SVG, favorite_icon_handle};
+#[cfg(feature = "panel-applet")]
+use crate::views::components::{POPIN_SVG, POPOUT_SVG};
 
-/// Height (px) of the video region inside the now-playing bar when a video is
-/// playing — large enough to show the frame full-width while the track list
-/// stays visible above.
-const VIDEO_REGION_HEIGHT: f32 = 300.0;
+/// Placeholder height (px) for the embedded video area before the first frame
+/// arrives. Once frames flow, the area shrinks to the video's true aspect ratio
+/// so there are no letterbox bars (the pop-out window shows full pixels).
+const VIDEO_LOADING_HEIGHT: f32 = 180.0;
 
 /// How long the video-mode overlay controls stay visible after the last
 /// pointer interaction before fading out.
@@ -165,12 +167,13 @@ impl AppModel {
             ViewState::History => self.view_history(),
             ViewState::Profiles => self.view_profiles(),
             ViewState::Settings => self.view_settings(),
-            ViewState::SharePrompt(track_id, track_title, album_id, album_title) => self
+            ViewState::SharePrompt(track_id, track_title, album_id, album_title, is_video) => self
                 .view_share_prompt(
                     track_id.clone(),
                     track_title.clone(),
                     album_id.clone(),
                     album_title.clone(),
+                    *is_video,
                 ),
         }
     }
@@ -283,11 +286,13 @@ impl AppModel {
 
     /// Build the live video-frame element shown in the now-playing pane while a
     /// music video is playing (replacing album art + track info + spectrum).
+    ///
+    /// The frame fills the available width and the height follows its aspect
+    /// ratio (`ContentFit::Contain` with a `Shrink` height), so the embedded
+    /// area hugs the picture rather than padding it with black bars.
     fn video_frame_element<'a>(
         &self,
-        video: &crate::video::VideoPlayer,
-        height: Length,
-        fit: cosmic::iced::ContentFit,
+        video: &crate::playback::MediaPlayer,
         radius: [f32; 4],
     ) -> Element<'a, Message> {
         let frame = video
@@ -300,14 +305,14 @@ impl AppModel {
                 cosmic::widget::image::Handle::from_rgba(f.width, f.height, (*f.rgba).clone());
             cosmic::widget::image(handle)
                 .width(Length::Fill)
-                .height(height)
-                .content_fit(fit)
+                .height(Length::Shrink)
+                .content_fit(cosmic::iced::ContentFit::Contain)
                 .border_radius(radius)
                 .into()
         } else {
             container(text(fl!("loading")).size(12))
                 .width(Length::Fill)
-                .height(height)
+                .height(Length::Fixed(VIDEO_LOADING_HEIGHT))
                 .align_x(Alignment::Center)
                 .align_y(Alignment::Center)
                 .into()
@@ -327,7 +332,7 @@ impl AppModel {
     /// again [`VIDEO_CONTROLS_TIMEOUT`] after the last interaction.
     fn video_theater<'a>(
         &'a self,
-        video: &crate::video::VideoPlayer,
+        video: &crate::playback::MediaPlayer,
         info: Element<'a, Message>,
         controls: Element<'a, Message>,
     ) -> Element<'a, Message> {
@@ -335,9 +340,9 @@ impl AppModel {
         let radius = cosmic::theme::active().cosmic().corner_radii.radius_m;
         let corner = radius[0];
 
-        // Base layer: the video, filling the bar region edge-to-edge.
-        let surface =
-            self.video_frame_element(video, Length::Fill, cosmic::iced::ContentFit::Cover, radius);
+        // Base layer: the video, filling the width with its height following
+        // the picture's aspect ratio (no letterboxing).
+        let surface = self.video_frame_element(video, radius);
 
         // Overlay layer: controls pinned to the bottom on a translucent strip,
         // shown only while recently interacted with.  Its bottom corners are
@@ -388,12 +393,83 @@ impl AppModel {
         // still pass through to the control buttons.
         let interactive = widget::mouse_area(stack).on_move(|_| Message::VideoInteraction);
 
-        // Sized to the now-playing bar region (the track list stays above); the
+        // Sized to the video's aspect ratio (the track list stays above); the
         // backdrop stays transparent so the rounded corners reveal the popup.
         container(interactive)
             .width(Length::Fill)
-            .height(Length::Fixed(VIDEO_REGION_HEIGHT))
+            .height(Length::Shrink)
             .into()
+    }
+
+    /// The now-playing-bar video pop-out toggle button — shown only while a
+    /// video is playing (panel-applet only). Opens the video in a separate
+    /// child window, or (when already popped out) returns it inline.
+    fn pop_out_video_button(&self) -> Option<Element<'_, Message>> {
+        #[cfg(not(feature = "panel-applet"))]
+        {
+            None
+        }
+        #[cfg(feature = "panel-applet")]
+        {
+            // Show the toggle whenever a video is the current playback, whether
+            // it's inline (`video_player`) or popped out (`video_window`).
+            if self.video_player.is_none() && self.video_window.is_none() {
+                return None;
+            }
+            let popped = self.video_window.is_some();
+            // Popped out → show the "bring back inline" arrow (pointing into the
+            // panel); inline → show the "pop out" arrow (leaving the panel).
+            let mut pi = icon::from_svg_bytes(if popped { POPIN_SVG } else { POPOUT_SVG });
+            pi.symbolic = true;
+            Some(
+                button::icon(pi)
+                    .tooltip(if popped {
+                        fl!("tooltip-video-inline")
+                    } else {
+                        fl!("tooltip-video-popout")
+                    })
+                    .padding(4)
+                    .on_press(Message::ToggleVideoWindow)
+                    .into(),
+            )
+        }
+    }
+
+    /// The now-playing-bar "go to track radio" button. Hidden for videos,
+    /// which have no TIDAL track radio (the /tracks/{id}/mix endpoint 404s).
+    fn now_playing_radio_button(&self) -> Option<Element<'_, Message>> {
+        let track = self.playback_queue.get(self.playback_queue_index)?;
+        if track.is_video {
+            return None;
+        }
+        let mut ri = icon::from_svg_bytes(RADIO_SVG);
+        ri.symbolic = true;
+        Some(
+            button::icon(ri)
+                .tooltip(fl!("tooltip-go-to-track-radio"))
+                .padding(4)
+                .on_press(Message::ShowTrackRadio(track.clone()))
+                .into(),
+        )
+    }
+
+    /// The now-playing-bar lyrics button, shown only once we've confirmed the
+    /// current track actually has lyrics (otherwise the icon is hidden).
+    fn now_playing_lyrics_button(&self) -> Option<Element<'_, Message>> {
+        let track = self.playback_queue.get(self.playback_queue_index)?;
+        match &self.now_playing_lyrics {
+            Some((id, true)) if *id == track.id => {}
+            _ => return None,
+        }
+        let mut li = icon::from_svg_bytes(LYRICS_SVG);
+        li.symbolic = true;
+        Some(
+            button::icon(li)
+                .tooltip(fl!("tooltip-show-lyrics"))
+                .padding(4)
+                .on_press(Message::ShowLyrics(track.clone()))
+                .into(),
+        )
     }
 
     /// Render the now-playing bar shown at the bottom of the popup.
@@ -535,23 +611,26 @@ impl AppModel {
         };
 
         // Buttons row below - centered
-        let track_for_radio = self.playback_queue.get(self.playback_queue_index).cloned();
-
         let buttons_row = widget::Row::new()
-            .push({
-                let tip = if is_favorite {
-                    fl!("tooltip-remove-from-favorites")
-                } else {
-                    fl!("tooltip-add-to-favorites")
-                };
-                let btn = button::icon(favorite_icon_handle(is_favorite))
-                    .tooltip(tip)
-                    .padding(4);
-                if let Some(track) = current_track {
-                    btn.on_press(Message::ToggleFavorite(track))
-                } else {
+            .push_maybe({
+                // Videos can't be favorited (TIDAL's track-favorites endpoint
+                // 404s on a video id), so omit the heart for them.
+                let is_video = current_track.as_ref().is_some_and(|t| t.is_video);
+                (!is_video).then(|| {
+                    let tip = if is_favorite {
+                        fl!("tooltip-remove-from-favorites")
+                    } else {
+                        fl!("tooltip-add-to-favorites")
+                    };
+                    let btn = button::icon(favorite_icon_handle(is_favorite))
+                        .tooltip(tip)
+                        .padding(4);
+                    let btn: Element<'_, Message> = match current_track.clone() {
+                        Some(track) => btn.on_press(Message::ToggleFavorite(track)).into(),
+                        None => btn.into(),
+                    };
                     btn
-                }
+                })
             })
             .push(
                 button::icon(widget::icon::from_name("media-skip-backward-symbolic"))
@@ -608,33 +687,8 @@ impl AppModel {
                     .on_press(Message::StopPlayback)
                     .padding(4),
             )
-            .push({
-                let mut ri = icon::from_svg_bytes(RADIO_SVG);
-                ri.symbolic = true;
-                let btn = button::icon(ri)
-                    .tooltip(fl!("tooltip-go-to-track-radio"))
-                    .padding(4);
-                if let Some(track) = track_for_radio {
-                    btn.on_press(Message::ShowTrackRadio(track))
-                } else {
-                    btn
-                }
-            })
-            .push({
-                // Lyrics view entry point.  Disabled (no on_press) when
-                // there's no currently-playing track to attribute to.
-                let track_for_lyrics = self.playback_queue.get(self.playback_queue_index).cloned();
-                let mut li = icon::from_svg_bytes(LYRICS_SVG);
-                li.symbolic = true;
-                let btn = button::icon(li)
-                    .tooltip(fl!("tooltip-show-lyrics"))
-                    .padding(4);
-                if let Some(track) = track_for_lyrics {
-                    btn.on_press(Message::ShowLyrics(track))
-                } else {
-                    btn
-                }
-            })
+            .push_maybe(self.now_playing_radio_button())
+            .push_maybe(self.now_playing_lyrics_button())
             .push({
                 let btn = button::icon(widget::icon::from_name("emblem-shared-symbolic"))
                     .tooltip(fl!("tooltip-share"))
@@ -644,7 +698,8 @@ impl AppModel {
                 } else {
                     btn
                 }
-            });
+            })
+            .push_maybe(self.pop_out_video_button());
 
         // In standalone mode, append a volume button with a popover slider.
         // Panel-applet mode uses scroll wheel on the panel icon instead.
@@ -750,8 +805,12 @@ impl AppModel {
             .align_y(Alignment::Center);
 
         // Video mode: replace the compact bar with a full-area theater whose
-        // overlay (track info + controls) auto-hides.
-        if let Some(video) = &self.video_player {
+        // overlay (track info + controls) auto-hides. When the video is popped
+        // out into its own window, `video_player` is None so this falls through
+        // to the audio-style bar instead.
+        if let Some(video) = &self.video_player
+            && self.video_window.is_none()
+        {
             let controls = widget::Column::new()
                 .push(centered_buttons)
                 .push(progress_row)
