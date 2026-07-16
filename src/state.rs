@@ -22,7 +22,8 @@ use crate::menu::TidalMenuAction;
 use crate::tidal::auth::DeviceCodeInfo;
 use crate::tidal::client::TidalAppClient;
 use crate::tidal::models::{
-    Album, Artist, ExplorePage, ExploreRow, FeedActivity, Mix, Playlist, SearchResults, Track,
+    Album, Artist, ArtistRow, ExplorePage, ExploreRow, FeedActivity, FeedRow, Mix, Playlist,
+    SearchResults, Track, TrackDetailRow,
 };
 use crate::tidal::mpris::{MprisCommand, MprisHandle};
 use crate::tidal::play_history::PlayHistory;
@@ -176,14 +177,28 @@ pub struct AppModel {
     pub(crate) playlist_thumbnails: HashMap<String, Handle>,
     /// User favorite albums
     pub(crate) user_albums: Vec<Album>,
+    /// Favorite albums as virtual-`List` content (only visible cards render, so
+    /// covers load lazily on scroll). Rebuilt from `user_albums`.
+    pub(crate) albums_content: list::Content<Album>,
     /// User favorite tracks
     pub(crate) user_favorite_tracks: Vec<Track>,
     /// User's personalized mixes (from home feed)
     pub(crate) user_mixes: Vec<Mix>,
+    /// Mixes as virtual-`List` content. Rebuilt from `user_mixes`.
+    pub(crate) mixes_content: list::Content<Mix>,
     /// User's followed artists (profiles)
     pub(crate) user_followed_artists: Vec<Artist>,
+    /// Followed artists as virtual-`List` content. Rebuilt from
+    /// `user_followed_artists`.
+    pub(crate) profiles_content: list::Content<Artist>,
     /// Feed activities (new releases from followed artists)
     pub(crate) feed_activities: Vec<FeedActivity>,
+    /// Feed as time-grouped virtual-`List` content. Rebuilt from
+    /// `feed_activities`.
+    pub(crate) feed_content: list::Content<FeedRow>,
+    /// Flattened rows of the artist-detail view, rendered via the virtual
+    /// `List` widget so only visible rows materialise and covers load lazily.
+    pub(crate) artist_rows: list::Content<ArtistRow>,
     /// Currently loaded Explore (TIDAL browse) page, if any (kept for its title).
     pub(crate) explore_page: Option<ExplorePage>,
     /// Flattened rows of the current Explore page, rendered via the virtual
@@ -232,6 +247,9 @@ pub struct AppModel {
     pub(crate) track_detail_related_artists: Vec<Artist>,
     /// Related albums (one per similar artist) for the track detail view
     pub(crate) track_detail_related_albums: Vec<Album>,
+    /// Track-detail recommendations flattened into virtual-`List` content
+    /// (header + sections). Rebuilt as each section loads.
+    pub(crate) track_detail_rows: list::Content<TrackDetailRow>,
     /// Currently selected playlist tracks
     pub(crate) selected_playlist_tracks: Vec<Track>,
     /// Currently selected album tracks
@@ -318,7 +336,8 @@ pub struct AppModel {
     pub(crate) playback_source: Option<crate::tidal::models::PlaybackSource>,
     /// Image cache for album art
     pub(crate) image_cache: ImageCache,
-    /// Embedded cache database (turso): view-state snapshots, images, kv.
+    /// Embedded cache database (turso): view-state snapshots, images, play
+    /// history.
     /// `None` until it finishes opening at startup, or if opening failed; all
     /// cache reads/writes degrade gracefully to the network in that case.
     pub(crate) cache_db: Option<crate::cache::Db>,

@@ -105,9 +105,8 @@ impl AppModel {
         source: Option<crate::tidal::models::PlaybackSource>,
     ) -> Task<cosmic::Action<Message>> {
         tracing::info!(
-            "Play single track requested: {} - {} (source: {:?})",
-            track.artist_name,
-            track.title,
+            "Play single track requested: {} (source: {:?})",
+            track,
             source.as_ref().map(|s| (&s.kind, &s.id))
         );
         self.playback_source = source;
@@ -299,19 +298,14 @@ impl AppModel {
         // the API didn't provide one.
         let replay_gain_db = playback_url.replay_gain_db().unwrap_or(0.0);
 
-        // Build a GStreamer URI. DASH manifests are written to disk (file://);
-        // direct qualities are already http(s) URLs GStreamer streams.
-        let url_str = playback_url.as_url();
-        let uri = if playback_url.is_dash() {
-            crate::playback::file_uri(std::path::Path::new(&url_str))
-        } else {
-            url_str
-        };
+        // `as_url()` returns a ready-to-use GStreamer URI: an http(s) URL for
+        // direct qualities, or an inline `data:application/dash+xml` URI for
+        // DASH (HiRes) — nothing is written to disk.
+        let uri = playback_url.as_url();
 
         tracing::info!(
-            "GStreamer audio: {} - {} ({})",
-            track.artist_name,
-            track.title,
+            "GStreamer audio: {} ({})",
+            track,
             if playback_url.is_dash() {
                 "DASH"
             } else {
@@ -456,7 +450,7 @@ impl AppModel {
                     });
                     self.play_history.record(&track);
                     self.persist_play_history();
-                    tracing::info!("Video handed to pop-out window: {}", track.title);
+                    tracing::info!("Video handed to pop-out window: {}", track);
                     return Task::batch([
                         self.update_mpris_state(),
                         self.refresh_now_playing_lyrics(&track),
@@ -493,7 +487,7 @@ impl AppModel {
                         self.playback_position = 0.0;
                         self.play_history.record(&track);
                         self.persist_play_history();
-                        tracing::info!("Video playback started: {}", track.title);
+                        tracing::info!("Video playback started: {}", track);
                         return Task::batch([
                             self.update_mpris_state(),
                             self.refresh_now_playing_lyrics(&track),
@@ -1106,11 +1100,10 @@ impl AppModel {
         };
 
         tracing::info!(
-            "Preloading next track [{}/{}]: {} - {} (loop: {:?})",
+            "Preloading next track [{}/{}]: {} (loop: {:?})",
             next_index + 1,
             self.playback_queue.len(),
-            track.artist_name,
-            track.title,
+            track,
             self.loop_status,
         );
 
@@ -1139,14 +1132,10 @@ impl AppModel {
             Ok((track, playback_url)) => {
                 if let Some(mp) = &self.media_player {
                     let rg = playback_url.replay_gain_db().unwrap_or(0.0);
-                    let url_str = playback_url.as_url();
-                    let uri = if playback_url.is_dash() {
-                        crate::playback::file_uri(std::path::Path::new(&url_str))
-                    } else {
-                        url_str
-                    };
+                    // Ready-to-use GStreamer URI (http(s) or inline data: DASH).
+                    let uri = playback_url.as_url();
                     mp.set_next(uri, rg);
-                    tracing::info!("Gapless: staged next track '{}'", track.title);
+                    tracing::info!("Gapless: staged next track: {}", track);
                 }
             }
             Err(e) => {

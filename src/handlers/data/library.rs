@@ -11,7 +11,9 @@ use cosmic::prelude::*;
 
 use crate::messages::Message;
 use crate::state::{AppModel, ViewState};
-use crate::tidal::models::{Album, Artist, FeedActivity, FeedItem, Mix, Playlist, Track};
+use crate::tidal::models::{
+    Album, Artist, ArtistRow, FeedActivity, FeedRow, Mix, Playlist, Track, TrackDetailRow,
+};
 
 // =============================================================================
 // Task Helper Methods
@@ -394,26 +396,6 @@ impl AppModel {
             |result| cosmic::Action::App(Message::ProfilesLoaded(result)),
         )
     }
-
-    /// Trigger image loads for mix cover art
-    pub(crate) fn load_images_for_mixes(&self) -> Task<cosmic::Action<Message>> {
-        let urls: Vec<String> = self
-            .user_mixes
-            .iter()
-            .filter_map(|m| m.image_url.clone())
-            .collect();
-        self.load_images_for_urls(urls)
-    }
-
-    /// Trigger image loads for followed artist pictures
-    pub(crate) fn load_images_for_profiles(&self) -> Task<cosmic::Action<Message>> {
-        let urls: Vec<String> = self
-            .user_followed_artists
-            .iter()
-            .filter_map(|a| a.picture_url.clone())
-            .collect();
-        self.load_images_for_urls(urls)
-    }
 }
 
 // =============================================================================
@@ -438,17 +420,10 @@ impl AppModel {
         }
         match result {
             Ok(playlists) => {
-                // Collect image URLs to load
-                let urls: Vec<String> = playlists
-                    .iter()
-                    .filter_map(|p| p.image_url.clone())
-                    .collect();
                 self.user_playlists = playlists;
-                let img_task = self.load_images_for_urls(urls);
-                // Kick off 2×2 grid thumbnail generation in the background
-                let thumb_task =
-                    Task::done(cosmic::Action::App(Message::GeneratePlaylistThumbnails));
-                Task::batch([img_task, thumb_task])
+                // Covers load lazily per visible row (HandleCache::get_or_request).
+                // Kick off 2×2 grid thumbnail generation in the background.
+                Task::done(cosmic::Action::App(Message::GeneratePlaylistThumbnails))
             }
             Err(e) => {
                 tracing::error!("Failed to load playlists: {}", e);
@@ -466,11 +441,10 @@ impl AppModel {
         self.is_loading = false;
         match result {
             Ok(tracks) => {
-                // Collect cover URLs to load
-                let urls: Vec<String> = tracks.iter().filter_map(|t| t.cover_url.clone()).collect();
                 self.set_track_list(tracks.clone());
                 self.selected_playlist_tracks = tracks;
-                self.load_images_for_urls(urls)
+                // Covers load lazily per visible row via get_or_request.
+                Task::none()
             }
             Err(e) => {
                 tracing::error!("Failed to load tracks: {}", e);
@@ -485,6 +459,131 @@ impl AppModel {
         self.load_albums()
     }
 
+    /// Rebuild the mixes virtual-`List` content from `user_mixes`.
+    pub(crate) fn rebuild_mixes_content(&mut self) {
+        self.mixes_content = self.user_mixes.iter().cloned().collect();
+    }
+
+    /// Rebuild the followed-artists (profiles) virtual-`List` content.
+    pub(crate) fn rebuild_profiles_content(&mut self) {
+        self.profiles_content = self.user_followed_artists.iter().cloned().collect();
+    }
+
+    /// Rebuild the favorite-albums virtual-`List` content from `user_albums`.
+    pub(crate) fn rebuild_albums_content(&mut self) {
+        self.albums_content = self.user_albums.iter().cloned().collect();
+    }
+
+    /// Rebuild the track-detail recommendations into virtual-`List` content:
+    /// the track header, then a header + cards (or a loading placeholder) for
+    /// each of the three recommendation sections. Called as each section loads.
+    pub(crate) fn rebuild_track_detail_rows(&mut self) {
+        use TrackDetailRow as R;
+        let mut rows: Vec<R> = Vec::new();
+
+        if let Some(track) = &self.selected_detail_track {
+            rows.push(R::Header(Box::new(track.clone())));
+        }
+        let artist_name = self
+            .selected_detail_track
+            .as_ref()
+            .map(|t| t.artist_name.clone())
+            .unwrap_or_default();
+
+        // Section 1: More Albums by {Artist}
+        if !self.track_detail_artist_albums.is_empty() {
+            rows.push(R::SectionHeader(crate::fl!(
+                "more-albums-by",
+                artist = artist_name.clone()
+            )));
+            rows.extend(
+                self.track_detail_artist_albums
+                    .iter()
+                    .cloned()
+                    .map(|a| R::ArtistAlbum(Box::new(a))),
+            );
+        } else if self.is_loading {
+            rows.push(R::SectionHeader(crate::fl!(
+                "more-albums-by",
+                artist = artist_name.clone()
+            )));
+            rows.push(R::Loading);
+        }
+
+        // Section 2: Related Albums
+        if !self.track_detail_related_albums.is_empty() {
+            rows.push(R::SectionHeader(crate::fl!("related-albums")));
+            rows.extend(
+                self.track_detail_related_albums
+                    .iter()
+                    .cloned()
+                    .map(|a| R::RelatedAlbum(Box::new(a))),
+            );
+        } else if !self.track_detail_related_artists.is_empty() {
+            rows.push(R::SectionHeader(crate::fl!("related-albums")));
+            rows.push(R::Loading);
+        }
+
+        // Section 3: Related Artists
+        if !self.track_detail_related_artists.is_empty() {
+            rows.push(R::SectionHeader(crate::fl!("related-artists")));
+            rows.extend(
+                self.track_detail_related_artists
+                    .iter()
+                    .cloned()
+                    .map(|a| R::RelatedArtist(Box::new(a))),
+            );
+        } else if self.is_loading {
+            rows.push(R::SectionHeader(crate::fl!("related-artists")));
+            rows.push(R::Loading);
+        }
+
+        self.track_detail_rows = rows.into_iter().collect();
+    }
+
+    /// Rebuild the feed virtual-`List` content from `feed_activities`, grouping
+    /// activities into time buckets (New / Last week / Last month / Older) with
+    /// a section header per non-empty bucket. Only visible rows render, so
+    /// covers load lazily on scroll.
+    pub(crate) fn rebuild_feed_content(&mut self) {
+        let now = chrono::Utc::now();
+        let mut new_updates: Vec<FeedActivity> = Vec::new();
+        let mut last_week: Vec<FeedActivity> = Vec::new();
+        let mut last_month: Vec<FeedActivity> = Vec::new();
+        let mut older: Vec<FeedActivity> = Vec::new();
+
+        for activity in &self.feed_activities {
+            let days = chrono::DateTime::parse_from_rfc3339(&activity.occurred_at)
+                .ok()
+                .map(|date| now.signed_duration_since(date).num_days());
+            match days {
+                Some(d) if d <= 2 => new_updates.push(activity.clone()),
+                Some(d) if d <= 7 => last_week.push(activity.clone()),
+                Some(d) if d <= 30 => last_month.push(activity.clone()),
+                _ => older.push(activity.clone()),
+            }
+        }
+
+        let mut rows: Vec<FeedRow> = Vec::new();
+        if !new_updates.is_empty() {
+            rows.push(FeedRow::SectionHeader(crate::fl!("feed-new-updates")));
+            rows.extend(new_updates.into_iter().map(|a| FeedRow::Activity(Box::new(a))));
+        }
+        if !last_week.is_empty() {
+            rows.push(FeedRow::SectionHeader(crate::fl!("feed-last-week")));
+            rows.extend(last_week.into_iter().map(|a| FeedRow::Activity(Box::new(a))));
+        }
+        if !last_month.is_empty() {
+            rows.push(FeedRow::SectionHeader(crate::fl!("feed-last-month")));
+            rows.extend(last_month.into_iter().map(|a| FeedRow::Activity(Box::new(a))));
+        }
+        if !older.is_empty() {
+            rows.push(FeedRow::SectionHeader(crate::fl!("feed-older")));
+            rows.extend(older.into_iter().map(|a| FeedRow::Activity(Box::new(a))));
+        }
+        self.feed_content = rows.into_iter().collect();
+    }
+
     /// Handle albums loaded
     pub fn handle_albums_loaded(
         &mut self,
@@ -495,12 +594,12 @@ impl AppModel {
         }
         match result {
             Ok(albums) => {
-                // Collect image URLs to load
-                let urls: Vec<String> = albums.iter().filter_map(|a| a.cover_url.clone()).collect();
                 self.user_albums = albums;
                 // Populate favorite album IDs so we know which albums are favorited
                 self.populate_favorite_album_ids();
-                self.load_images_for_urls(urls)
+                self.rebuild_albums_content();
+                // Covers load lazily per visible card via get_or_request.
+                Task::none()
             }
             Err(e) => {
                 tracing::error!("Failed to load albums: {}", e);
@@ -518,11 +617,10 @@ impl AppModel {
         self.is_loading = false;
         match result {
             Ok(tracks) => {
-                // Collect cover URLs to load
-                let urls: Vec<String> = tracks.iter().filter_map(|t| t.cover_url.clone()).collect();
                 self.set_track_list(tracks.clone());
                 self.selected_album_tracks = tracks;
-                self.load_images_for_urls(urls)
+                // Covers load lazily per visible row via get_or_request.
+                Task::none()
             }
             Err(e) => {
                 tracing::error!("Failed to load album tracks: {}", e);
@@ -601,6 +699,36 @@ impl AppModel {
         )
     }
 
+    /// Rebuild the flattened artist-detail rows (`artist_rows`) from the current
+    /// artist info, top tracks, videos, and discography. Those four payloads load
+    /// in parallel, so this is called whenever any of them arrives to keep the
+    /// single virtual list in sync. Only visible rows render, so covers load
+    /// lazily on scroll (no bulk prefetch).
+    pub(crate) fn rebuild_artist_rows(&mut self) {
+        let mut rows: Vec<ArtistRow> = Vec::new();
+        if let Some(artist) = &self.selected_artist {
+            rows.push(ArtistRow::Info(Box::new(artist.clone())));
+        }
+        if !self.selected_artist_top_tracks.is_empty() {
+            rows.push(ArtistRow::SectionHeader(crate::fl!("top-tracks")));
+            rows.extend((0..self.selected_artist_top_tracks.len()).map(ArtistRow::TopTrack));
+        }
+        if !self.selected_artist_videos.is_empty() {
+            rows.push(ArtistRow::SectionHeader(crate::fl!("videos")));
+            rows.extend((0..self.selected_artist_videos.len()).map(ArtistRow::Video));
+        }
+        if !self.selected_artist_albums.is_empty() {
+            rows.push(ArtistRow::SectionHeader(crate::fl!("discography")));
+            rows.extend(
+                self.selected_artist_albums
+                    .iter()
+                    .cloned()
+                    .map(|a| ArtistRow::Album(Box::new(a))),
+            );
+        }
+        self.artist_rows = rows.into_iter().collect();
+    }
+
     /// Handle artist info loaded
     pub fn handle_artist_info_loaded(
         &mut self,
@@ -613,6 +741,7 @@ impl AppModel {
                     urls.push(url.clone());
                 }
                 self.selected_artist = Some(artist);
+                self.rebuild_artist_rows();
                 self.load_images_for_urls(urls)
             }
             Err(e) => {
@@ -632,10 +761,11 @@ impl AppModel {
         self.is_loading = false;
         match result {
             Ok(tracks) => {
-                let urls: Vec<String> = tracks.iter().filter_map(|t| t.cover_url.clone()).collect();
                 self.set_track_list(tracks.clone());
                 self.selected_artist_top_tracks = tracks;
-                self.load_images_for_urls(urls)
+                self.rebuild_artist_rows();
+                // Covers load lazily per visible row via get_or_request.
+                Task::none()
             }
             Err(e) => {
                 tracing::error!("Failed to load artist tracks: {}", e);
@@ -652,9 +782,10 @@ impl AppModel {
     ) -> Task<cosmic::Action<Message>> {
         match result {
             Ok(albums) => {
-                let urls: Vec<String> = albums.iter().filter_map(|a| a.cover_url.clone()).collect();
                 self.selected_artist_albums = albums;
-                self.load_images_for_urls(urls)
+                self.rebuild_artist_rows();
+                // Covers load lazily per visible row via get_or_request.
+                Task::none()
             }
             Err(e) => {
                 tracing::error!("Failed to load artist albums: {}", e);
@@ -671,9 +802,10 @@ impl AppModel {
     ) -> Task<cosmic::Action<Message>> {
         match result {
             Ok(videos) => {
-                let urls: Vec<String> = videos.iter().filter_map(|v| v.cover_url.clone()).collect();
                 self.selected_artist_videos = videos;
-                self.load_images_for_urls(urls)
+                self.rebuild_artist_rows();
+                // Covers load lazily per visible row via get_or_request.
+                Task::none()
             }
             Err(e) => {
                 tracing::error!("Failed to load artist videos: {}", e);
@@ -698,12 +830,11 @@ impl AppModel {
         }
         match result {
             Ok(tracks) => {
-                // Collect cover URLs to load
-                let urls: Vec<String> = tracks.iter().filter_map(|t| t.cover_url.clone()).collect();
                 // Populate favorite track IDs set
                 self.favorite_track_ids = tracks.iter().map(|t| t.id.clone()).collect();
                 self.user_favorite_tracks = tracks;
-                self.load_images_for_urls(urls)
+                // Covers load lazily per visible row via get_or_request.
+                Task::none()
             }
             Err(e) => {
                 tracing::error!("Failed to load favorite tracks: {}", e);
@@ -735,7 +866,8 @@ impl AppModel {
             Ok(mixes) => {
                 tracing::info!("Loaded {} mixes", mixes.len());
                 self.user_mixes = mixes;
-                self.load_images_for_mixes()
+                self.rebuild_mixes_content();
+                Task::none()
             }
             Err(e) => {
                 tracing::error!("Failed to load mixes: {}", e);
@@ -754,10 +886,10 @@ impl AppModel {
         match result {
             Ok(tracks) => {
                 tracing::info!("Loaded {} mix tracks", tracks.len());
-                let urls: Vec<String> = tracks.iter().filter_map(|t| t.cover_url.clone()).collect();
                 self.set_track_list(tracks.clone());
                 self.selected_mix_tracks = tracks;
-                self.load_images_for_urls(urls)
+                // Covers load lazily per visible row via get_or_request.
+                Task::none()
             }
             Err(e) => {
                 tracing::error!("Failed to load mix tracks: {}", e);
@@ -779,11 +911,11 @@ impl AppModel {
         match result {
             Ok((mix_id, tracks)) => {
                 tracing::info!("Loaded track radio: mix={} tracks={}", mix_id, tracks.len());
-                let urls: Vec<String> = tracks.iter().filter_map(|t| t.cover_url.clone()).collect();
                 self.set_track_list(tracks.clone());
                 self.selected_radio_tracks = tracks;
                 self.selected_radio_mix_id = Some(mix_id);
-                self.load_images_for_urls(urls)
+                // Covers load lazily per visible row via get_or_request.
+                Task::none()
             }
             Err(e) => {
                 tracing::error!("Failed to load track radio: {}", e);
@@ -835,9 +967,10 @@ impl AppModel {
         match result {
             Ok(albums) => {
                 tracing::info!("Track detail: loaded {} artist albums", albums.len());
-                let urls: Vec<String> = albums.iter().filter_map(|a| a.cover_url.clone()).collect();
                 self.track_detail_artist_albums = albums;
-                self.load_images_for_urls(urls)
+                self.rebuild_track_detail_rows();
+                // Covers load lazily per visible row via get_or_request.
+                Task::none()
             }
             Err(e) => {
                 tracing::error!("Failed to load artist albums for track detail: {}", e);
@@ -858,21 +991,18 @@ impl AppModel {
         match result {
             Ok(artists) => {
                 tracing::info!("Track detail: loaded {} related artists", artists.len());
-                let picture_urls: Vec<String> = artists
-                    .iter()
-                    .filter_map(|a| a.picture_url.clone())
-                    .collect();
                 let artist_ids: Vec<String> = artists.iter().map(|a| a.id.clone()).collect();
                 self.track_detail_related_artists = artists;
 
-                // Fetch related albums (one per similar artist) in a follow-up
+                // Fetch related albums (one per similar artist) in a follow-up.
+                // Pictures load lazily per visible row via get_or_request.
                 let albums_task = if artist_ids.is_empty() {
                     Task::none()
                 } else {
                     self.load_track_detail_related_albums(artist_ids)
                 };
-
-                Task::batch([self.load_images_for_urls(picture_urls), albums_task])
+                self.rebuild_track_detail_rows();
+                albums_task
             }
             Err(e) => {
                 tracing::error!("Failed to load related artists for track detail: {}", e);
@@ -889,9 +1019,10 @@ impl AppModel {
         match result {
             Ok(albums) => {
                 tracing::info!("Track detail: loaded {} related albums", albums.len());
-                let urls: Vec<String> = albums.iter().filter_map(|a| a.cover_url.clone()).collect();
                 self.track_detail_related_albums = albums;
-                self.load_images_for_urls(urls)
+                self.rebuild_track_detail_rows();
+                // Covers load lazily per visible row via get_or_request.
+                Task::none()
             }
             Err(e) => {
                 tracing::error!("Failed to load related albums for track detail: {}", e);
@@ -915,15 +1046,10 @@ impl AppModel {
         match result {
             Ok(activities) => {
                 tracing::info!("Loaded {} feed activities", activities.len());
-                let urls: Vec<String> = activities
-                    .iter()
-                    .filter_map(|a| match &a.item {
-                        FeedItem::AlbumRelease(album) => album.cover_url.clone(),
-                        FeedItem::HistoryMix { image_url, .. } => image_url.clone(),
-                    })
-                    .collect();
                 self.feed_activities = activities;
-                self.load_images_for_urls(urls)
+                self.rebuild_feed_content();
+                // Covers load lazily per visible row via get_or_request.
+                Task::none()
             }
             Err(e) => {
                 tracing::error!("Failed to load feed: {}", e);
@@ -1034,7 +1160,8 @@ impl AppModel {
                 artists.sort_by_key(|a| a.name.to_lowercase());
                 self.followed_artist_ids = artists.iter().map(|a| a.id.clone()).collect();
                 self.user_followed_artists = artists;
-                self.load_images_for_profiles()
+                self.rebuild_profiles_content();
+                Task::none()
             }
             Err(e) => {
                 tracing::error!("Failed to load followed artists: {}", e);

@@ -66,6 +66,13 @@ impl cosmic::Application for AppModel {
             })
             .unwrap_or_default();
 
+        // Apply the persisted console log level to the live subscriber, unless
+        // RUST_LOG is set (in which case the environment keeps precedence, as
+        // it does at startup in `main`).
+        if std::env::var_os("RUST_LOG").is_none() {
+            crate::logging::set_console_level(config.log_level);
+        }
+
         // Initialize the spectrum analyzer that the now-playing visualizer
         // reads. The playback pipeline's PCM tap feeds it; created at 44.1 kHz
         // with one band per visualizer bar (no oversampling).
@@ -110,10 +117,15 @@ impl cosmic::Application for AppModel {
             user_playlists: Vec::new(),
             playlist_thumbnails: HashMap::new(),
             user_albums: Vec::new(),
+            albums_content: cosmic::iced::widget::list::Content::default(),
             user_favorite_tracks: Vec::new(),
             user_mixes: Vec::new(),
+            mixes_content: cosmic::iced::widget::list::Content::default(),
             user_followed_artists: Vec::new(),
+            profiles_content: cosmic::iced::widget::list::Content::default(),
             feed_activities: Vec::new(),
+            feed_content: cosmic::iced::widget::list::Content::default(),
+            artist_rows: cosmic::iced::widget::list::Content::default(),
             explore_page: None,
             explore_rows: cosmic::iced::widget::list::Content::default(),
             explore_loading: false,
@@ -132,6 +144,7 @@ impl cosmic::Application for AppModel {
             track_detail_artist_albums: Vec::new(),
             track_detail_related_artists: Vec::new(),
             track_detail_related_albums: Vec::new(),
+            track_detail_rows: cosmic::iced::widget::list::Content::default(),
             selected_playlist_tracks: Vec::new(),
             selected_album_tracks: Vec::new(),
             selected_playlist_name: None,
@@ -543,6 +556,28 @@ impl cosmic::Application for AppModel {
             | Message::FollowArtistToggled(_) => {
                 tracing::debug!("update() received: {:?}", message);
             }
+            // URL-resolution results carry a full Track plus a signed URL whose
+            // query string holds a short-lived auth token. Log a concise,
+            // token-free summary (Track + redacted PlaybackUrl Display) rather
+            // than dumping the raw Debug.
+            Message::PlaybackUrlReceived(res) => match res {
+                Ok((track, url)) => {
+                    tracing::info!("update() received: PlaybackUrlReceived(Ok({track}, {url}))")
+                }
+                Err(e) => tracing::info!("update() received: PlaybackUrlReceived(Err: {e})"),
+            },
+            Message::PreloadUrlReceived(res) => match res {
+                Ok((track, url)) => {
+                    tracing::info!("update() received: PreloadUrlReceived(Ok({track}, {url}))")
+                }
+                Err(e) => tracing::info!("update() received: PreloadUrlReceived(Err: {e})"),
+            },
+            Message::VideoUrlReceived(res) => match res {
+                Ok((track, _url)) => {
+                    tracing::info!("update() received: VideoUrlReceived(Ok({track}, HLS))")
+                }
+                Err(e) => tracing::info!("update() received: VideoUrlReceived(Err: {e})"),
+            },
             // Log important messages at info level
             msg => tracing::info!("update() received: {:?}", msg),
         }
@@ -792,6 +827,10 @@ impl cosmic::Application for AppModel {
 
             // Misc handlers - settings
             Message::SetAudioQuality(quality) => self.handle_set_audio_quality(quality),
+            Message::SetLogLevel(level) => {
+                self.handle_set_log_level(level);
+                Task::none()
+            }
             Message::ClearHistory => {
                 self.handle_clear_history();
                 Task::none()
@@ -824,14 +863,9 @@ impl cosmic::Application for AppModel {
                     tracing::info!("cache database ready");
                     self.image_cache.set_db(db.clone());
                     self.cache_db = Some(db.clone());
-                    // Load persisted play history from the database.
+                    // Load persisted play history from the `play_history` table.
                     return Task::perform(
-                        async move {
-                            db.get_kv(crate::tidal::play_history::HISTORY_KEY)
-                                .await
-                                .and_then(|b| serde_json::from_slice(&b).ok())
-                                .unwrap_or_default()
-                        },
+                        async move { crate::handlers::misc::load_play_history(&db).await },
                         |entries| cosmic::Action::App(Message::PlayHistoryLoaded(entries)),
                     );
                 }

@@ -81,6 +81,18 @@ pub struct Track {
     pub is_video: bool,
 }
 
+impl std::fmt::Display for Track {
+    /// Human-readable one-liner for logs: `Artist - Title [id]`, with a
+    /// `(video)` suffix for music videos.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} - {} [{}]", self.artist_name, self.title, self.id)?;
+        if self.is_video {
+            write!(f, " (video)")?;
+        }
+        Ok(())
+    }
+}
+
 impl Track {
     /// Format duration as MM:SS
     pub fn duration_display(&self) -> String {
@@ -658,6 +670,53 @@ pub enum ExploreRow {
     Playlist(Playlist),
     /// An artist entry.
     Artist(Artist),
+}
+
+/// A single flattened row of the **artist-detail** view, rendered through the
+/// virtual `List` widget so only the rows visible in the viewport materialise
+/// (their covers then load lazily via `HandleCache::get_or_request`).
+#[derive(Debug, Clone)]
+pub enum ArtistRow {
+    /// Hero block: picture, roles, popularity, and bio.
+    Info(Box<Artist>),
+    /// A section heading ("Top Tracks", "Videos", "Discography").
+    SectionHeader(String),
+    /// A top-track row, addressed by index into `selected_artist_top_tracks`.
+    TopTrack(usize),
+    /// A music-video row, addressed by index into `selected_artist_videos`.
+    Video(usize),
+    /// A discography album card.
+    Album(Box<Album>),
+}
+
+/// A single flattened row of the **feed** view, rendered through the virtual
+/// `List` widget so only visible rows materialise and covers load lazily.
+#[derive(Debug, Clone)]
+pub enum FeedRow {
+    /// A time-period heading ("New", "Last week", …).
+    SectionHeader(String),
+    /// A feed activity (new album release or history mix).
+    Activity(Box<FeedActivity>),
+}
+
+/// A single flattened row of the **track-detail** view, rendered through the
+/// virtual `List` widget so only visible rows materialise and covers load
+/// lazily.
+#[derive(Debug, Clone)]
+pub enum TrackDetailRow {
+    /// The track info header: cover, title, clickable artist/album, metadata.
+    Header(Box<Track>),
+    /// A recommendation-section heading.
+    SectionHeader(String),
+    /// A "loading recommendations" placeholder shown under a header while a
+    /// section's data is still in flight.
+    Loading,
+    /// A "More Albums by {Artist}" card (artist name omitted — it's redundant).
+    ArtistAlbum(Box<Album>),
+    /// A "Related Albums" card (includes artist name — different artists).
+    RelatedAlbum(Box<Album>),
+    /// A "Related Artists" card (picture + name).
+    RelatedArtist(Box<Artist>),
 }
 
 impl ExplorePage {

@@ -231,7 +231,8 @@ impl AppModel {
                 self.load_mixes(),
             ])
         } else {
-            self.load_images_for_mixes()
+            self.rebuild_mixes_content();
+            Task::none()
         }
     }
 
@@ -277,7 +278,8 @@ impl AppModel {
                 self.load_profiles(),
             ])
         } else {
-            self.load_images_for_profiles()
+            self.rebuild_profiles_content();
+            Task::none()
         }
     }
 
@@ -403,10 +405,12 @@ impl AppModel {
         self.selected_detail_track = Some(track.clone());
         self.is_loading = true;
         self.view_state = ViewState::TrackDetail;
+        self.rebuild_track_detail_rows();
 
         let artist_id = track.artist_id.clone().unwrap_or_default();
         if artist_id.is_empty() {
             self.is_loading = false;
+            self.rebuild_track_detail_rows();
             return Task::none();
         }
 
@@ -496,6 +500,7 @@ impl AppModel {
         self.selected_artist_top_tracks.clear();
         self.selected_artist_albums.clear();
         self.selected_artist_videos.clear();
+        self.artist_rows = Default::default();
         self.is_loading = true;
         self.view_state = ViewState::ArtistDetail;
 
@@ -697,11 +702,15 @@ impl AppModel {
                 self.set_track_list(tracks);
             }
             ViewState::ArtistDetail => {
-                let tracks = self.selected_artist_top_tracks.clone();
-                self.set_track_list(tracks);
+                self.rebuild_artist_rows();
             }
             ViewState::History => self.rebuild_history_track_list(),
             ViewState::FavoriteTracks => self.rebuild_favorites_track_list(),
+            ViewState::Albums => self.rebuild_albums_content(),
+            ViewState::Mixes => self.rebuild_mixes_content(),
+            ViewState::Profiles => self.rebuild_profiles_content(),
+            ViewState::Feed => self.rebuild_feed_content(),
+            ViewState::TrackDetail => self.rebuild_track_detail_rows(),
             ViewState::Explore => {
                 self.explore_rows = self
                     .explore_page
