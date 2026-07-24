@@ -1,6 +1,6 @@
 [package]
 name = "cosmic-applet-mare"
-version = "0.2.9"
+version = "0.3.0"
 edition = "2024"
 license = "MIT"
 authors = ["Maré Player authors"]
@@ -27,6 +27,18 @@ default = ["panel-applet"]
 # Disable this feature to build a standalone COSMIC application that
 # renders in its own window instead of living in the panel.
 panel-applet = ["libcosmic/applet", "libcosmic/applet-token"]
+# GPU-accelerated rendering via wgpu (Vulkan/Metal/DX12), with automatic
+# fallback to iced's tiny_skia CPU rasterizer.
+#
+# Only enabled for the **standalone** build, whose top-level window can bind
+# the hardware Vulkan adapter. The **panel applet deliberately omits this**:
+# on a layer-shell surface wgpu can't bind the GPU (radv fails the swapchain
+# with ERROR_SURFACE_LOST_KHR) and instead falls back to *software* GL
+# (llvmpipe: ~64 threads, ~350 MB). Without the feature, iced compiles as
+# tiny_skia only — a light CPU rasterizer that never touches Mesa/GL — which
+# is what the stock COSMIC applets use and is far cheaper for our 2D content
+# (lists, album art, the fill_quad spectrum bars, the text fade).
+wgpu = ["libcosmic/wgpu"]
 
 
 [dependencies]
@@ -62,7 +74,7 @@ open = "5"
 reqwest = { version = "0.13.1", default-features = false, features = ["json", "rustls"] }
 
 # Random number generation for shuffle
-rand = "0.9"
+rand = "0.10"
 
 # FFT for real spectrum analysis
 rustfft = "6.4.1"
@@ -71,7 +83,7 @@ rustfft = "6.4.1"
 # view-state cache and the image cache. Songs stay on the filesystem; videos
 # are never cached. `default-features = false` drops the bundled mimalloc
 # global allocator and the FTS extension, neither of which the cache needs.
-turso = { version = "0.6.1", default-features = false }
+turso = { version = "0.7.0", default-features = false }
 
 # GStreamer — the playback engine for all audio tracks and music videos
 # (decoding, streaming, output, volume/replay-gain, seeking, gapless). Audio
@@ -100,8 +112,8 @@ serde_urlencoded = "0.7.1"
 # Send SIGUSR1 to the process → samples for 10 s → writes /tmp/mare-flamegraph.svg.
 # In release builds the code is gated out and LTO strips the deps.
 [target.'cfg(target_os = "linux")'.dependencies]
-pprof = { version = "0.14", default-features = false, features = ["flamegraph"] }
-signal-hook = "0.3"
+pprof = { version = "0.15", default-features = false, features = ["flamegraph"] }
+signal-hook = "0.4"
 
 [dependencies.i18n-embed]
 version = "0.16"
@@ -120,11 +132,6 @@ features = [
     "wayland",
     # Windowing support for X11, Windows, Mac, & Redox
     "winit",
-    # GPU-accelerated rendering via wgpu (Vulkan/Metal/DX12).
-    # iced_renderer compiles as Fallback<wgpu, tiny-skia> — it tries
-    # the GPU backend first and falls back to the CPU software
-    # rasterizer automatically when no adapter is available.
-    "wgpu",
 ]
 # Applet support ("applet", "applet-token") is activated conditionally
 # by the `panel-applet` feature — see [features] above.
