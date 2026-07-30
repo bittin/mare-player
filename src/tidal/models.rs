@@ -31,10 +31,7 @@ pub fn tidal_cover_url(uuid: &str) -> String {
 
 /// Build a TIDAL CDN URL for an image UUID at a specific square size.
 pub fn tidal_cover_url_sized(uuid: &str, size_px: u32) -> String {
-    format!(
-        "https://resources.tidal.com/images/{}/{size_px}x{size_px}.jpg",
-        uuid.replace('-', "/")
-    )
+    format!("https://resources.tidal.com/images/{}/{size_px}x{size_px}.jpg", uuid.replace('-', "/"))
 }
 
 /// Build a TIDAL CDN URL for a featured-promo image UUID.
@@ -43,10 +40,7 @@ pub fn tidal_cover_url_sized(uuid: &str, size_px: u32) -> String {
 /// usual `320x320` request returns 403 Forbidden.  Featured cards must
 /// request this specific non-square size.
 pub fn tidal_promo_image_url(uuid: &str) -> String {
-    format!(
-        "https://resources.tidal.com/images/{}/550x400.jpg",
-        uuid.replace('-', "/")
-    )
+    format!("https://resources.tidal.com/images/{}/550x400.jpg", uuid.replace('-', "/"))
 }
 
 /// A music track
@@ -115,10 +109,7 @@ impl From<tidlers::client::models::track::Track> for Track {
             artist_id: Some(t.artist.id.to_string()),
             album_name: album.as_ref().map(|a| a.title.clone()),
             album_id: album.as_ref().map(|a| a.id.to_string()),
-            cover_url: album
-                .as_ref()
-                .and_then(|a| a.cover.as_deref())
-                .map(tidal_cover_url),
+            cover_url: album.as_ref().and_then(|a| a.cover.as_deref()).map(tidal_cover_url),
             explicit: t.explicit,
             audio_quality: Some(t.audio_quality),
             is_video: false,
@@ -129,15 +120,8 @@ impl From<tidlers::client::models::track::Track> for Track {
 /// Convert from tidlers SearchTrackHit type (search results)
 impl From<tidlers::client::models::search::SearchTrackHit> for Track {
     fn from(t: tidlers::client::models::search::SearchTrackHit) -> Self {
-        let artist_name = t
-            .artists
-            .first()
-            .and_then(|a| a.name.clone())
-            .unwrap_or_else(|| "Unknown Artist".to_string());
-        let artist_id = t
-            .artists
-            .first()
-            .and_then(|a| a.id.map(|id| id.to_string()));
+        let artist_name = t.artists.first().and_then(|a| a.name.clone()).unwrap_or_else(|| "Unknown Artist".to_string());
+        let artist_id = t.artists.first().and_then(|a| a.id.map(|id| id.to_string()));
 
         Self {
             id: t.id.to_string(),
@@ -205,15 +189,8 @@ impl From<tidlers::client::models::album::AlbumResponse> for Album {
 /// Convert from tidlers SearchAlbumHit type (search results)
 impl From<tidlers::client::models::search::SearchAlbumHit> for Album {
     fn from(a: tidlers::client::models::search::SearchAlbumHit) -> Self {
-        let artist_name = a
-            .artists
-            .first()
-            .and_then(|ar| ar.name.clone())
-            .unwrap_or_else(|| "Unknown Artist".to_string());
-        let artist_id = a
-            .artists
-            .first()
-            .and_then(|ar| ar.id.map(|id| id.to_string()));
+        let artist_name = a.artists.first().and_then(|ar| ar.name.clone()).unwrap_or_else(|| "Unknown Artist".to_string());
+        let artist_id = a.artists.first().and_then(|ar| ar.id.map(|id| id.to_string()));
 
         Self {
             id: a.id.to_string(),
@@ -343,11 +320,7 @@ impl Playlist {
         let hours = self.duration / 3600;
         let minutes = (self.duration % 3600) / 60;
         let seconds = self.duration % 60;
-        if hours > 0 {
-            format!("{}:{:02}:{:02}", hours, minutes, seconds)
-        } else {
-            format!("{}:{:02}", minutes, seconds)
-        }
+        if hours > 0 { format!("{}:{:02}:{:02}", hours, minutes, seconds) } else { format!("{}:{:02}", minutes, seconds) }
     }
 }
 
@@ -479,53 +452,29 @@ pub struct PlaybackSource {
 impl PlaybackSource {
     /// Convenience constructor for an album-rooted session.
     pub fn album(id: impl Into<String>, name: impl Into<String>) -> Self {
-        Self {
-            kind: PlaybackSourceKind::Album,
-            id: id.into(),
-            display_name: name.into(),
-        }
+        Self { kind: PlaybackSourceKind::Album, id: id.into(), display_name: name.into() }
     }
     pub fn playlist(uuid: impl Into<String>, name: impl Into<String>) -> Self {
-        Self {
-            kind: PlaybackSourceKind::Playlist,
-            id: uuid.into(),
-            display_name: name.into(),
-        }
+        Self { kind: PlaybackSourceKind::Playlist, id: uuid.into(), display_name: name.into() }
     }
     pub fn mix(id: impl Into<String>, name: impl Into<String>) -> Self {
-        Self {
-            kind: PlaybackSourceKind::Mix,
-            id: id.into(),
-            display_name: name.into(),
-        }
+        Self { kind: PlaybackSourceKind::Mix, id: id.into(), display_name: name.into() }
     }
     pub fn artist(id: impl Into<String>, name: impl Into<String>) -> Self {
-        Self {
-            kind: PlaybackSourceKind::Artist,
-            id: id.into(),
-            display_name: name.into(),
-        }
+        Self { kind: PlaybackSourceKind::Artist, id: id.into(), display_name: name.into() }
     }
     /// Track-seeded radio station: pick a track, TIDAL generates a
     /// station of similar tracks.  Tries `sourceType=TRACK_RADIO` — see
     /// [`PlaybackSourceKind::TrackRadio`] for the probe caveat.
     pub fn track_radio(seed_track_id: impl Into<String>, display_name: impl Into<String>) -> Self {
-        Self {
-            kind: PlaybackSourceKind::TrackRadio,
-            id: seed_track_id.into(),
-            display_name: display_name.into(),
-        }
+        Self { kind: PlaybackSourceKind::TrackRadio, id: seed_track_id.into(), display_name: display_name.into() }
     }
 
     /// Catch-all fallback: a play without a real container context
     /// (e.g. from the favorites list, the history view, or a single
     /// MPRIS OpenUri).  TIDAL won't surface these in Recently Played.
     pub fn track(id: impl Into<String>, display_name: impl Into<String>) -> Self {
-        Self {
-            kind: PlaybackSourceKind::Track,
-            id: id.into(),
-            display_name: display_name.into(),
-        }
+        Self { kind: PlaybackSourceKind::Track, id: id.into(), display_name: display_name.into() }
     }
 
     /// Ad-hoc playback context with only a display label — used for
@@ -534,11 +483,7 @@ impl PlaybackSource {
     /// substitutes the per-listen track id when sending the play_log
     /// event, so attribution still credits the right track.
     pub fn ad_hoc(display_name: impl Into<String>) -> Self {
-        Self {
-            kind: PlaybackSourceKind::Track,
-            id: String::new(),
-            display_name: display_name.into(),
-        }
+        Self { kind: PlaybackSourceKind::Track, id: String::new(), display_name: display_name.into() }
     }
 }
 
@@ -554,11 +499,7 @@ impl SearchResults {
 
     /// Total number of results across all categories
     pub fn total_count(&self) -> usize {
-        self.tracks.len()
-            + self.albums.len()
-            + self.artists.len()
-            + self.playlists.len()
-            + self.videos.len()
+        self.tracks.len() + self.albums.len() + self.artists.len() + self.playlists.len() + self.videos.len()
     }
 }
 
@@ -579,12 +520,7 @@ pub enum FeedItem {
     /// A new album or single released by a followed artist.
     AlbumRelease(Album),
     /// A monthly listening history mix.
-    HistoryMix {
-        id: String,
-        title: String,
-        subtitle: String,
-        image_url: Option<String>,
-    },
+    HistoryMix { id: String, title: String, subtitle: String, image_url: Option<String> },
 }
 
 // ── Explore (TIDAL browse pages) ────────────────────────────────────
@@ -604,20 +540,14 @@ pub struct ExplorePage {
 #[derive(Debug, Clone)]
 pub enum ExploreSection {
     /// Top "Featured" carousel of promo cards.
-    Featured {
-        title: String,
-        items: Vec<ExploreCard>,
-    },
+    Featured { title: String, items: Vec<ExploreCard> },
     /// A cloud/grid of links to other browse pages
     /// (Genres, Moods & Activities, Decades, More).
     Links { title: String, links: Vec<PageLink> },
     /// Horizontal list of albums.
     Albums { title: String, albums: Vec<Album> },
     /// Horizontal list of playlists.
-    Playlists {
-        title: String,
-        playlists: Vec<Playlist>,
-    },
+    Playlists { title: String, playlists: Vec<Playlist> },
     /// Horizontal list of artists.
     Artists { title: String, artists: Vec<Artist> },
 }
@@ -825,9 +755,7 @@ impl TrackLyrics {
         // partition_point returns the count of elements that are <= predicate;
         // since lines are sorted by time_ms ascending and we want the *last*
         // line that has started, that count minus one is our index.
-        let count = self
-            .lrc_lines
-            .partition_point(|line| line.time_ms <= position_ms);
+        let count = self.lrc_lines.partition_point(|line| line.time_ms <= position_ms);
         if count == 0 { None } else { Some(count - 1) }
     }
 }
@@ -884,10 +812,7 @@ pub fn parse_lrc(subtitles: &str) -> Vec<LrcLine> {
         }
         let text = rest.trim().to_string();
         for ms in timestamps {
-            out.push(LrcLine {
-                time_ms: ms,
-                text: text.clone(),
-            });
+            out.push(LrcLine { time_ms: ms, text: text.clone() });
         }
     }
 
@@ -934,11 +859,72 @@ fn parse_lrc_timestamp(tag: &str) -> Option<u64> {
     // overflows when scaled to milliseconds. An overflowing value isn't a real
     // timestamp, so treat it as invalid (`None`) — the caller skips the line,
     // matching the other `?` parse failures above. (Found by `fuzz_lrc_parse`.)
-    let ms = mm
-        .checked_mul(60_000)?
-        .checked_add(ss.checked_mul(1_000)?)?
-        .checked_add(frac_ms)?;
+    let ms = mm.checked_mul(60_000)?.checked_add(ss.checked_mul(1_000)?)?.checked_add(frac_ms)?;
     Some(ms)
+}
+
+// ── Credits ───────────────────────────────────────────────────────────────────────
+
+/// A single credited person on a track, as returned by TIDAL's credits
+/// endpoint.
+///
+/// Contributors carry real TIDAL **artist** ids (the same id space as
+/// `/v1/artists/{id}`), so the credits view can link straight through to an
+/// artist page.  The id is optional because TIDAL occasionally returns
+/// name-only entries for people who have no catalog presence.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CreditContributor {
+    /// Display name ("Jimmy Page").
+    pub name: String,
+    /// TIDAL artist id, when the contributor has an artist page.
+    pub id: Option<String>,
+}
+
+/// One credit role and everyone credited under it.
+///
+/// TIDAL groups by role, so a person appearing as both "Writer" and
+/// "Guitar" shows up in two [`CreditRole`] entries.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CreditRole {
+    /// Role name as TIDAL spells it ("Producer", "Mastering Engineer", …).
+    pub role: String,
+    /// People credited under this role, in TIDAL's order.
+    pub contributors: Vec<CreditContributor>,
+}
+
+/// Everything the credits view shows for a track: the per-role contributor
+/// list plus the handful of catalog fields (label, release date, ISRC, BPM)
+/// that live on the track object rather than in the credits payload.
+///
+/// All fields are optional — TIDAL's coverage varies a lot by release, and a
+/// track with no credits at all is a normal (not error) outcome, mirroring how
+/// [`TrackLyrics`] treats "no lyrics".
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct TrackCredits {
+    /// Credit roles in TIDAL's order (producer first, then instruments…).
+    #[serde(default)]
+    pub roles: Vec<CreditRole>,
+    /// Copyright / label line ("℗ 2013 Atlantic Records").
+    #[serde(default)]
+    pub copyright: Option<String>,
+    /// Release date as `YYYY-MM-DD`, derived from the track's stream start
+    /// date (TIDAL's own credits panel shows the same value).
+    #[serde(default)]
+    pub released: Option<String>,
+    /// International Standard Recording Code.
+    #[serde(default)]
+    pub isrc: Option<String>,
+    /// Beats per minute, when TIDAL has analysed the track.
+    #[serde(default)]
+    pub bpm: Option<u32>,
+}
+
+impl TrackCredits {
+    /// True when TIDAL returned nothing worth rendering — no roles and none
+    /// of the catalog extras.  The view shows its empty state in that case.
+    pub fn is_empty(&self) -> bool {
+        self.roles.is_empty() && self.copyright.is_none() && self.released.is_none() && self.isrc.is_none() && self.bpm.is_none()
+    }
 }
 
 #[cfg(test)]
@@ -946,15 +932,44 @@ mod tests {
     use super::*;
 
     #[test]
+    fn track_credits_empty_and_roundtrip() {
+        // Default is "nothing to show".
+        assert!(TrackCredits::default().is_empty());
+
+        // Any single populated field flips it.
+        let only_isrc = TrackCredits { isrc: Some("USAT21300896".into()), ..Default::default() };
+        assert!(!only_isrc.is_empty());
+
+        let credits = TrackCredits {
+            roles: vec![CreditRole {
+                role: "Producer".into(),
+                contributors: vec![CreditContributor { name: "Jimmy Page".into(), id: Some("3544300".into()) }],
+            }],
+            copyright: Some("℗ 2013 Atlantic Records".into()),
+            released: Some("2014-10-27".into()),
+            isrc: Some("USAT21300896".into()),
+            bpm: Some(143),
+        };
+        assert!(!credits.is_empty());
+
+        let json = serde_json::to_string(&credits).expect("serialize");
+        let back: TrackCredits = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back.roles.len(), 1);
+        assert_eq!(back.roles[0].role, "Producer");
+        assert_eq!(back.roles[0].contributors[0].id.as_deref(), Some("3544300"));
+        assert_eq!(back.bpm, Some(143));
+
+        // Older/partial cached payloads still deserialize — every field is
+        // `#[serde(default)]`.
+        let partial: TrackCredits = serde_json::from_str("{}").expect("deserialize partial");
+        assert!(partial.is_empty());
+    }
+
+    #[test]
     fn search_results_videos_roundtrip_and_serde_default() {
         // Videos round-trip through the cache serialization.
         let mut r = SearchResults::default();
-        r.videos.push(Track {
-            id: "42".into(),
-            title: "A Music Video".into(),
-            is_video: true,
-            ..Default::default()
-        });
+        r.videos.push(Track { id: "42".into(), title: "A Music Video".into(), is_video: true, ..Default::default() });
         let json = serde_json::to_string(&r).expect("serialize");
         let back: SearchResults = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(back.videos.len(), 1);
@@ -971,16 +986,10 @@ mod tests {
 
     #[test]
     fn test_track_duration_display() {
-        let track = Track {
-            duration: 185,
-            ..Default::default()
-        };
+        let track = Track { duration: 185, ..Default::default() };
         assert_eq!(track.duration_display(), "3:05");
 
-        let track2 = Track {
-            duration: 60,
-            ..Default::default()
-        };
+        let track2 = Track { duration: 60, ..Default::default() };
         assert_eq!(track2.duration_display(), "1:00");
     }
 
@@ -1025,16 +1034,7 @@ mod tests {
         let lines = parse_lrc("[00:01.23]First line\n[00:05.67]Second line");
         assert_eq!(
             lines,
-            vec![
-                LrcLine {
-                    time_ms: 1_230,
-                    text: "First line".into()
-                },
-                LrcLine {
-                    time_ms: 5_670,
-                    text: "Second line".into()
-                },
-            ]
+            vec![LrcLine { time_ms: 1_230, text: "First line".into() }, LrcLine { time_ms: 5_670, text: "Second line".into() },]
         );
     }
 
@@ -1120,16 +1120,7 @@ mod tests {
     #[test]
     fn lyrics_line_index_at_returns_none_before_first_line() {
         let lyrics = TrackLyrics {
-            lrc_lines: vec![
-                LrcLine {
-                    time_ms: 5_000,
-                    text: "First".into(),
-                },
-                LrcLine {
-                    time_ms: 10_000,
-                    text: "Second".into(),
-                },
-            ],
+            lrc_lines: vec![LrcLine { time_ms: 5_000, text: "First".into() }, LrcLine { time_ms: 10_000, text: "Second".into() }],
             ..Default::default()
         };
         assert_eq!(lyrics.line_index_at(0.0), None);
@@ -1140,18 +1131,9 @@ mod tests {
     fn lyrics_line_index_at_picks_active_line() {
         let lyrics = TrackLyrics {
             lrc_lines: vec![
-                LrcLine {
-                    time_ms: 5_000,
-                    text: "A".into(),
-                },
-                LrcLine {
-                    time_ms: 10_000,
-                    text: "B".into(),
-                },
-                LrcLine {
-                    time_ms: 15_000,
-                    text: "C".into(),
-                },
+                LrcLine { time_ms: 5_000, text: "A".into() },
+                LrcLine { time_ms: 10_000, text: "B".into() },
+                LrcLine { time_ms: 15_000, text: "C".into() },
             ],
             ..Default::default()
         };
@@ -1166,10 +1148,7 @@ mod tests {
 
     #[test]
     fn lyrics_line_index_at_handles_empty_synced_lyrics() {
-        let lyrics = TrackLyrics {
-            plain_text: Some("Just a plain block".into()),
-            ..Default::default()
-        };
+        let lyrics = TrackLyrics { plain_text: Some("Just a plain block".into()), ..Default::default() };
         assert_eq!(lyrics.line_index_at(10.0), None);
     }
 
@@ -1179,20 +1158,11 @@ mod tests {
         assert!(empty.is_empty());
         assert!(!empty.is_synced());
 
-        let plain_only = TrackLyrics {
-            plain_text: Some("text".into()),
-            ..Default::default()
-        };
+        let plain_only = TrackLyrics { plain_text: Some("text".into()), ..Default::default() };
         assert!(!plain_only.is_empty());
         assert!(!plain_only.is_synced());
 
-        let synced = TrackLyrics {
-            lrc_lines: vec![LrcLine {
-                time_ms: 0,
-                text: "hi".into(),
-            }],
-            ..Default::default()
-        };
+        let synced = TrackLyrics { lrc_lines: vec![LrcLine { time_ms: 0, text: "hi".into() }], ..Default::default() };
         assert!(!synced.is_empty());
         assert!(synced.is_synced());
     }
@@ -1211,26 +1181,17 @@ mod tests {
     fn cover_url_uses_default_size() {
         // tidal_cover_url delegates to the sized variant with DEFAULT_COVER_SIZE_PX.
         let uuid = "abcd-ef01";
-        assert_eq!(
-            tidal_cover_url(uuid),
-            tidal_cover_url_sized(uuid, DEFAULT_COVER_SIZE_PX)
-        );
+        assert_eq!(tidal_cover_url(uuid), tidal_cover_url_sized(uuid, DEFAULT_COVER_SIZE_PX));
     }
 
     #[test]
     fn cover_url_sized_embeds_requested_dimensions() {
-        assert_eq!(
-            tidal_cover_url_sized("a-b-c", 750),
-            "https://resources.tidal.com/images/a/b/c/750x750.jpg"
-        );
+        assert_eq!(tidal_cover_url_sized("a-b-c", 750), "https://resources.tidal.com/images/a/b/c/750x750.jpg");
     }
 
     #[test]
     fn cover_url_without_hyphens_is_passed_through() {
-        assert_eq!(
-            tidal_cover_url_sized("singlesegment", 80),
-            "https://resources.tidal.com/images/singlesegment/80x80.jpg"
-        );
+        assert_eq!(tidal_cover_url_sized("singlesegment", 80), "https://resources.tidal.com/images/singlesegment/80x80.jpg");
     }
 
     // ── PlaybackSourceKind ─────────────────────────────────────────────────
@@ -1320,10 +1281,7 @@ mod tests {
 
     #[test]
     fn search_results_with_only_one_category_is_not_empty() {
-        let results = SearchResults {
-            tracks: vec![Track::default()],
-            ..Default::default()
-        };
+        let results = SearchResults { tracks: vec![Track::default()], ..Default::default() };
         assert!(!results.is_empty());
         assert_eq!(results.total_count(), 1);
     }

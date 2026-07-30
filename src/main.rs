@@ -24,7 +24,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use cosmic_applet_mare::i18n;
 
 use tracing_subscriber::fmt::time::ChronoLocal;
-use tracing_subscriber::{fmt, prelude::*, EnvFilter};
+use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 
 /// Start a background thread that waits for SIGUSR1, then samples for 10 s
 /// and writes a flamegraph SVG to `/tmp/mare-flamegraph.svg`.
@@ -128,10 +128,7 @@ fn main() -> cosmic::iced::Result {
     // applet is spawned by cosmic-panel (which forwards a child's stderr to the
     // journal but not its stdout), these logs reach `journalctl`.
     let (console_filter, console_reload) = tracing_subscriber::reload::Layer::new(filter);
-    let console_layer = fmt::layer()
-        .with_writer(std::io::stderr)
-        .with_timer(local_time)
-        .with_filter(console_filter);
+    let console_layer = fmt::layer().with_writer(std::io::stderr).with_timer(local_time).with_filter(console_filter);
 
     tracing_subscriber::registry().with(console_layer).init();
 

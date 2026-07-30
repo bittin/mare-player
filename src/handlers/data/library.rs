@@ -11,9 +11,7 @@ use cosmic::prelude::*;
 
 use crate::messages::Message;
 use crate::state::{AppModel, ViewState};
-use crate::tidal::models::{
-    Album, Artist, ArtistRow, FeedActivity, FeedRow, Mix, Playlist, Track, TrackDetailRow,
-};
+use crate::tidal::models::{Album, Artist, ArtistRow, FeedActivity, FeedRow, Mix, Playlist, Track, TrackDetailRow};
 
 // =============================================================================
 // Task Helper Methods
@@ -28,14 +26,10 @@ impl AppModel {
             async move {
                 let result = {
                     let client = client.lock().await;
-                    client
-                        .get_user_playlists(Some(50), None)
-                        .await
-                        .map_err(|e| e.to_string())
+                    client.get_user_playlists(Some(50), None).await.map_err(|e| e.to_string())
                 };
                 if let Ok(ref playlists) = result {
-                    crate::handlers::view_cache::cache_put(db, "library:playlists", playlists)
-                        .await;
+                    crate::handlers::view_cache::cache_put(db, "library:playlists", playlists).await;
                 }
                 result
             },
@@ -44,10 +38,7 @@ impl AppModel {
     }
 
     /// Load tracks for a specific playlist
-    pub(crate) fn load_playlist_tracks(
-        &self,
-        playlist_uuid: String,
-    ) -> Task<cosmic::Action<Message>> {
+    pub(crate) fn load_playlist_tracks(&self, playlist_uuid: String) -> Task<cosmic::Action<Message>> {
         let client = self.tidal_client.clone();
         let db = self.cache_db.clone();
         let key = format!("playlist:{playlist_uuid}:tracks");
@@ -55,10 +46,7 @@ impl AppModel {
             async move {
                 let result = {
                     let client = client.lock().await;
-                    client
-                        .get_playlist_tracks(&playlist_uuid, None, None)
-                        .await
-                        .map_err(|e| e.to_string())
+                    client.get_playlist_tracks(&playlist_uuid, None, None).await.map_err(|e| e.to_string())
                 };
                 if let Ok(ref tracks) = result {
                     crate::handlers::view_cache::cache_put(db, &key, tracks).await;
@@ -77,10 +65,7 @@ impl AppModel {
             async move {
                 let result = {
                     let client = client.lock().await;
-                    client
-                        .get_user_favorite_albums(None)
-                        .await
-                        .map_err(|e| e.to_string())
+                    client.get_user_favorite_albums(None).await.map_err(|e| e.to_string())
                 };
                 if let Ok(ref albums) = result {
                     crate::handlers::view_cache::cache_put(db, "library:albums", albums).await;
@@ -100,10 +85,7 @@ impl AppModel {
             async move {
                 let result = {
                     let client = client.lock().await;
-                    client
-                        .get_album_tracks(&album_id, None, None)
-                        .await
-                        .map_err(|e| e.to_string())
+                    client.get_album_tracks(&album_id, None, None).await.map_err(|e| e.to_string())
                 };
                 if let Ok(ref tracks) = result {
                     crate::handlers::view_cache::cache_put(db, &key, tracks).await;
@@ -122,10 +104,7 @@ impl AppModel {
             async move {
                 let result = {
                     let client = client.lock().await;
-                    client
-                        .get_user_favorite_tracks(None)
-                        .await
-                        .map_err(|e| e.to_string())
+                    client.get_user_favorite_tracks(None).await.map_err(|e| e.to_string())
                 };
                 if let Ok(ref tracks) = result {
                     crate::handlers::view_cache::cache_put(db, "favorites:tracks", tracks).await;
@@ -164,10 +143,7 @@ impl AppModel {
             async move {
                 let result = {
                     let client = client.lock().await;
-                    client
-                        .get_mix_tracks(&mix_id)
-                        .await
-                        .map_err(|e| e.to_string())
+                    client.get_mix_tracks(&mix_id).await.map_err(|e| e.to_string())
                 };
                 if let Ok(ref tracks) = result {
                     crate::handlers::view_cache::cache_put(db, &key, tracks).await;
@@ -189,12 +165,36 @@ impl AppModel {
         Task::perform(
             async move {
                 let client = client.lock().await;
-                client
-                    .get_track_mix(&track_id)
-                    .await
-                    .map_err(|e| e.to_string())
+                client.get_track_mix(&track_id).await.map_err(|e| e.to_string())
             },
             |result| cosmic::Action::App(Message::TrackRadioLoaded(result)),
+        )
+    }
+
+    /// Load credits for a specific track.
+    ///
+    /// Returns an empty [`TrackCredits`] (not an error) when TIDAL has no
+    /// credits for the track; only genuine network/parse failures end in
+    /// `Err`.  See
+    /// [`TidalAppClient::get_track_credits`](crate::tidal::client::TidalAppClient::get_track_credits).
+    pub(crate) fn load_track_credits(&self, track_id: String) -> Task<cosmic::Action<Message>> {
+        let client = self.tidal_client.clone();
+        let db = self.cache_db.clone();
+        let key = format!("credits:{track_id}");
+        Task::perform(
+            async move {
+                let result = {
+                    let client = client.lock().await;
+                    client.get_track_credits(&track_id).await.map_err(|e| e.to_string())
+                };
+                // Cache the result (including "no credits") so re-opening the
+                // view paints instantly next time.
+                if let Ok(ref credits) = result {
+                    crate::handlers::view_cache::cache_put(db, &key, credits).await;
+                }
+                result
+            },
+            |result| cosmic::Action::App(Message::TrackCreditsLoaded(result)),
         )
     }
 
@@ -211,10 +211,7 @@ impl AppModel {
             async move {
                 let result = {
                     let client = client.lock().await;
-                    client
-                        .get_track_lyrics(&track_id)
-                        .await
-                        .map_err(|e| e.to_string())
+                    client.get_track_lyrics(&track_id).await.map_err(|e| e.to_string())
                 };
                 // Cache the result (including "no lyrics") so the lyrics view
                 // and the now-playing icon check read it instantly next time.
@@ -231,10 +228,7 @@ impl AppModel {
     /// now-playing bar only shows the lyrics icon when the track actually has
     /// lyrics. Reads the DB lyrics cache first and only hits the network on a
     /// miss (caching the result, including "no lyrics").
-    pub(crate) fn refresh_now_playing_lyrics(
-        &mut self,
-        track: &Track,
-    ) -> Task<cosmic::Action<Message>> {
+    pub(crate) fn refresh_now_playing_lyrics(&mut self, track: &Track) -> Task<cosmic::Action<Message>> {
         let track_id = track.id.clone();
         // Unknown until the check returns — hide the icon in the meantime.
         self.now_playing_lyrics = None;
@@ -246,8 +240,7 @@ impl AppModel {
                 // DB cache first; only hit the network on a miss.
                 if let Some(db) = &db
                     && let Some(bytes) = db.get_view(&key).await
-                    && let Ok(lyrics) =
-                        serde_json::from_slice::<crate::tidal::models::TrackLyrics>(&bytes)
+                    && let Ok(lyrics) = serde_json::from_slice::<crate::tidal::models::TrackLyrics>(&bytes)
                 {
                     return (track_id, !lyrics.is_empty());
                 }
@@ -271,46 +264,30 @@ impl AppModel {
     /// Store the result of a now-playing lyrics-availability check: when it's
     /// still the current track, update the flag the now-playing bar reads.
     pub fn handle_now_playing_lyrics_checked(&mut self, track_id: String, has_lyrics: bool) {
-        if self
-            .now_playing
-            .as_ref()
-            .is_some_and(|np| np.track_id == track_id)
-        {
+        if self.now_playing.as_ref().is_some_and(|np| np.track_id == track_id) {
             self.now_playing_lyrics = Some((track_id, has_lyrics));
         }
     }
 
     /// Load albums by the track's artist (for "More Albums by {Artist}" section).
-    pub(crate) fn load_track_detail_artist_albums(
-        &self,
-        artist_id: String,
-    ) -> Task<cosmic::Action<Message>> {
+    pub(crate) fn load_track_detail_artist_albums(&self, artist_id: String) -> Task<cosmic::Action<Message>> {
         let client = self.tidal_client.clone();
         Task::perform(
             async move {
                 let client = client.lock().await;
-                client
-                    .get_artist_albums(&artist_id, Some(20))
-                    .await
-                    .map_err(|e| e.to_string())
+                client.get_artist_albums(&artist_id, Some(20)).await.map_err(|e| e.to_string())
             },
             |result| cosmic::Action::App(Message::TrackDetailArtistAlbumsLoaded(result)),
         )
     }
 
     /// Load similar/related artists for a track detail view.
-    pub(crate) fn load_track_detail_related_artists(
-        &self,
-        artist_id: String,
-    ) -> Task<cosmic::Action<Message>> {
+    pub(crate) fn load_track_detail_related_artists(&self, artist_id: String) -> Task<cosmic::Action<Message>> {
         let client = self.tidal_client.clone();
         Task::perform(
             async move {
                 let client = client.lock().await;
-                client
-                    .get_similar_artists(&artist_id, Some(20))
-                    .await
-                    .map_err(|e| e.to_string())
+                client.get_similar_artists(&artist_id, Some(20)).await.map_err(|e| e.to_string())
             },
             |result| cosmic::Action::App(Message::TrackDetailRelatedArtistsLoaded(result)),
         )
@@ -320,10 +297,7 @@ impl AppModel {
     ///
     /// Fetches each artist's discography (limit 1) in parallel and flattens
     /// the results.  Failures for individual artists are silently skipped.
-    pub(crate) fn load_track_detail_related_albums(
-        &self,
-        artist_ids: Vec<String>,
-    ) -> Task<cosmic::Action<Message>> {
+    pub(crate) fn load_track_detail_related_albums(&self, artist_ids: Vec<String>) -> Task<cosmic::Action<Message>> {
         let client = self.tidal_client.clone();
         Task::perform(
             async move {
@@ -366,10 +340,7 @@ impl AppModel {
         Task::perform(
             async move {
                 let client = client.lock().await;
-                client
-                    .get_explore_page(&slug)
-                    .await
-                    .map_err(|e| e.to_string())
+                client.get_explore_page(&slug).await.map_err(|e| e.to_string())
             },
             |result| cosmic::Action::App(Message::ExploreLoaded(result)),
         )
@@ -383,10 +354,7 @@ impl AppModel {
             async move {
                 let result = {
                     let client = client.lock().await;
-                    client
-                        .get_followed_artists()
-                        .await
-                        .map_err(|e| e.to_string())
+                    client.get_followed_artists().await.map_err(|e| e.to_string())
                 };
                 if let Ok(ref artists) = result {
                     crate::handlers::view_cache::cache_put(db, "profiles", artists).await;
@@ -409,10 +377,7 @@ impl AppModel {
     }
 
     /// Handle playlists loaded
-    pub fn handle_playlists_loaded(
-        &mut self,
-        result: Result<Vec<Playlist>, String>,
-    ) -> Task<cosmic::Action<Message>> {
+    pub fn handle_playlists_loaded(&mut self, result: Result<Vec<Playlist>, String>) -> Task<cosmic::Action<Message>> {
         // Only clear is_loading when the user is actually viewing playlists,
         // so background pre-fetches don't clobber loading state for other views.
         if self.view_state == ViewState::Playlists {
@@ -434,10 +399,7 @@ impl AppModel {
     }
 
     /// Handle playlist tracks loaded
-    pub fn handle_playlist_tracks_loaded(
-        &mut self,
-        result: Result<Vec<Track>, String>,
-    ) -> Task<cosmic::Action<Message>> {
+    pub fn handle_playlist_tracks_loaded(&mut self, result: Result<Vec<Track>, String>) -> Task<cosmic::Action<Message>> {
         self.is_loading = false;
         match result {
             Ok(tracks) => {
@@ -484,41 +446,21 @@ impl AppModel {
         if let Some(track) = &self.selected_detail_track {
             rows.push(R::Header(Box::new(track.clone())));
         }
-        let artist_name = self
-            .selected_detail_track
-            .as_ref()
-            .map(|t| t.artist_name.clone())
-            .unwrap_or_default();
+        let artist_name = self.selected_detail_track.as_ref().map(|t| t.artist_name.clone()).unwrap_or_default();
 
         // Section 1: More Albums by {Artist}
         if !self.track_detail_artist_albums.is_empty() {
-            rows.push(R::SectionHeader(crate::fl!(
-                "more-albums-by",
-                artist = artist_name.clone()
-            )));
-            rows.extend(
-                self.track_detail_artist_albums
-                    .iter()
-                    .cloned()
-                    .map(|a| R::ArtistAlbum(Box::new(a))),
-            );
+            rows.push(R::SectionHeader(crate::fl!("more-albums-by", artist = artist_name.clone())));
+            rows.extend(self.track_detail_artist_albums.iter().cloned().map(|a| R::ArtistAlbum(Box::new(a))));
         } else if self.is_loading {
-            rows.push(R::SectionHeader(crate::fl!(
-                "more-albums-by",
-                artist = artist_name.clone()
-            )));
+            rows.push(R::SectionHeader(crate::fl!("more-albums-by", artist = artist_name.clone())));
             rows.push(R::Loading);
         }
 
         // Section 2: Related Albums
         if !self.track_detail_related_albums.is_empty() {
             rows.push(R::SectionHeader(crate::fl!("related-albums")));
-            rows.extend(
-                self.track_detail_related_albums
-                    .iter()
-                    .cloned()
-                    .map(|a| R::RelatedAlbum(Box::new(a))),
-            );
+            rows.extend(self.track_detail_related_albums.iter().cloned().map(|a| R::RelatedAlbum(Box::new(a))));
         } else if !self.track_detail_related_artists.is_empty() {
             rows.push(R::SectionHeader(crate::fl!("related-albums")));
             rows.push(R::Loading);
@@ -527,12 +469,7 @@ impl AppModel {
         // Section 3: Related Artists
         if !self.track_detail_related_artists.is_empty() {
             rows.push(R::SectionHeader(crate::fl!("related-artists")));
-            rows.extend(
-                self.track_detail_related_artists
-                    .iter()
-                    .cloned()
-                    .map(|a| R::RelatedArtist(Box::new(a))),
-            );
+            rows.extend(self.track_detail_related_artists.iter().cloned().map(|a| R::RelatedArtist(Box::new(a))));
         } else if self.is_loading {
             rows.push(R::SectionHeader(crate::fl!("related-artists")));
             rows.push(R::Loading);
@@ -585,10 +522,7 @@ impl AppModel {
     }
 
     /// Handle albums loaded
-    pub fn handle_albums_loaded(
-        &mut self,
-        result: Result<Vec<Album>, String>,
-    ) -> Task<cosmic::Action<Message>> {
+    pub fn handle_albums_loaded(&mut self, result: Result<Vec<Album>, String>) -> Task<cosmic::Action<Message>> {
         if self.view_state == ViewState::Albums {
             self.is_loading = false;
         }
@@ -610,10 +544,7 @@ impl AppModel {
     }
 
     /// Handle album tracks loaded
-    pub fn handle_album_tracks_loaded(
-        &mut self,
-        result: Result<Vec<Track>, String>,
-    ) -> Task<cosmic::Action<Message>> {
+    pub fn handle_album_tracks_loaded(&mut self, result: Result<Vec<Track>, String>) -> Task<cosmic::Action<Message>> {
         self.is_loading = false;
         match result {
             Ok(tracks) => {
@@ -631,10 +562,7 @@ impl AppModel {
     }
 
     /// Handle album info loaded (when navigating by ID from now-playing or artist view)
-    pub fn handle_album_info_loaded(
-        &mut self,
-        result: Result<Album, String>,
-    ) -> Task<cosmic::Action<Message>> {
+    pub fn handle_album_info_loaded(&mut self, result: Result<Album, String>) -> Task<cosmic::Action<Message>> {
         match result {
             Ok(album) => {
                 let mut urls: Vec<String> = Vec::new();
@@ -647,11 +575,7 @@ impl AppModel {
                 let album_id = album.id.clone();
                 self.selected_album = Some(album);
                 let img_task = self.load_images_for_urls(urls);
-                if needs_review {
-                    Task::batch([img_task, self.load_album_review(album_id)])
-                } else {
-                    img_task
-                }
+                if needs_review { Task::batch([img_task, self.load_album_review(album_id)]) } else { img_task }
             }
             Err(e) => {
                 tracing::error!("Failed to load album info: {}", e);
@@ -685,10 +609,7 @@ impl AppModel {
             async move {
                 let result = {
                     let client = client.lock().await;
-                    client
-                        .get_album_review(&album_id)
-                        .await
-                        .map_err(|e| e.to_string())
+                    client.get_album_review(&album_id).await.map_err(|e| e.to_string())
                 };
                 if let Ok(ref review) = result {
                     crate::handlers::view_cache::cache_put(db, &key, review).await;
@@ -719,21 +640,13 @@ impl AppModel {
         }
         if !self.selected_artist_albums.is_empty() {
             rows.push(ArtistRow::SectionHeader(crate::fl!("discography")));
-            rows.extend(
-                self.selected_artist_albums
-                    .iter()
-                    .cloned()
-                    .map(|a| ArtistRow::Album(Box::new(a))),
-            );
+            rows.extend(self.selected_artist_albums.iter().cloned().map(|a| ArtistRow::Album(Box::new(a))));
         }
         self.artist_rows = rows.into_iter().collect();
     }
 
     /// Handle artist info loaded
-    pub fn handle_artist_info_loaded(
-        &mut self,
-        result: Result<Artist, String>,
-    ) -> Task<cosmic::Action<Message>> {
+    pub fn handle_artist_info_loaded(&mut self, result: Result<Artist, String>) -> Task<cosmic::Action<Message>> {
         match result {
             Ok(artist) => {
                 let mut urls: Vec<String> = Vec::new();
@@ -754,10 +667,7 @@ impl AppModel {
     }
 
     /// Handle artist top tracks loaded
-    pub fn handle_artist_top_tracks_loaded(
-        &mut self,
-        result: Result<Vec<Track>, String>,
-    ) -> Task<cosmic::Action<Message>> {
+    pub fn handle_artist_top_tracks_loaded(&mut self, result: Result<Vec<Track>, String>) -> Task<cosmic::Action<Message>> {
         self.is_loading = false;
         match result {
             Ok(tracks) => {
@@ -776,10 +686,7 @@ impl AppModel {
     }
 
     /// Handle artist albums (discography) loaded
-    pub fn handle_artist_albums_loaded(
-        &mut self,
-        result: Result<Vec<Album>, String>,
-    ) -> Task<cosmic::Action<Message>> {
+    pub fn handle_artist_albums_loaded(&mut self, result: Result<Vec<Album>, String>) -> Task<cosmic::Action<Message>> {
         match result {
             Ok(albums) => {
                 self.selected_artist_albums = albums;
@@ -796,10 +703,7 @@ impl AppModel {
     }
 
     /// Handle artist music videos loaded
-    pub fn handle_artist_videos_loaded(
-        &mut self,
-        result: Result<Vec<Track>, String>,
-    ) -> Task<cosmic::Action<Message>> {
+    pub fn handle_artist_videos_loaded(&mut self, result: Result<Vec<Track>, String>) -> Task<cosmic::Action<Message>> {
         match result {
             Ok(videos) => {
                 self.selected_artist_videos = videos;
@@ -821,10 +725,7 @@ impl AppModel {
     }
 
     /// Handle favorite tracks loaded
-    pub fn handle_favorite_tracks_loaded(
-        &mut self,
-        result: Result<Vec<Track>, String>,
-    ) -> Task<cosmic::Action<Message>> {
+    pub fn handle_favorite_tracks_loaded(&mut self, result: Result<Vec<Track>, String>) -> Task<cosmic::Action<Message>> {
         if self.view_state == ViewState::FavoriteTracks {
             self.is_loading = false;
         }
@@ -857,10 +758,7 @@ impl AppModel {
     }
 
     /// Handle mixes loaded result
-    pub fn handle_mixes_loaded(
-        &mut self,
-        result: Result<Vec<Mix>, String>,
-    ) -> Task<cosmic::Action<Message>> {
+    pub fn handle_mixes_loaded(&mut self, result: Result<Vec<Mix>, String>) -> Task<cosmic::Action<Message>> {
         self.is_loading = false;
         match result {
             Ok(mixes) => {
@@ -878,10 +776,7 @@ impl AppModel {
     }
 
     /// Handle mix tracks loaded result
-    pub fn handle_mix_tracks_loaded(
-        &mut self,
-        result: Result<Vec<Track>, String>,
-    ) -> Task<cosmic::Action<Message>> {
+    pub fn handle_mix_tracks_loaded(&mut self, result: Result<Vec<Track>, String>) -> Task<cosmic::Action<Message>> {
         self.is_loading = false;
         match result {
             Ok(tracks) => {
@@ -903,10 +798,7 @@ impl AppModel {
     ///
     /// Stores the backing mix id (for `MIX:<mix_id>` play attribution)
     /// alongside the resolved track list.
-    pub fn handle_track_radio_loaded(
-        &mut self,
-        result: Result<(String, Vec<Track>), String>,
-    ) -> Task<cosmic::Action<Message>> {
+    pub fn handle_track_radio_loaded(&mut self, result: Result<(String, Vec<Track>), String>) -> Task<cosmic::Action<Message>> {
         self.is_loading = false;
         match result {
             Ok((mix_id, tracks)) => {
@@ -959,6 +851,32 @@ impl AppModel {
         Task::none()
     }
 
+    /// Handle credits loaded result.
+    ///
+    /// Stores the credits (or an empty `TrackCredits` when TIDAL has none).
+    /// Errors are surfaced in the error banner but don't block the view; the
+    /// credits view falls back to its loading/empty state.
+    pub fn handle_track_credits_loaded(&mut self, result: Result<crate::tidal::models::TrackCredits, String>) {
+        match result {
+            Ok(credits) => {
+                tracing::info!(
+                    "Credits loaded: roles={} label={} isrc={} bpm={:?}",
+                    credits.roles.len(),
+                    credits.copyright.is_some(),
+                    credits.isrc.is_some(),
+                    credits.bpm
+                );
+                self.selected_track_credits = Some(credits);
+            }
+            Err(e) => {
+                tracing::error!("Failed to load credits: {}", e);
+                self.error_message = Some(format!("Failed to load credits: {}", e));
+                // Leave selected_track_credits = None; the view keeps showing
+                // its loading state in that case.
+            }
+        }
+    }
+
     /// Handle "More Albums by {Artist}" loaded for the track detail view.
     pub fn handle_track_detail_artist_albums_loaded(
         &mut self,
@@ -996,11 +914,8 @@ impl AppModel {
 
                 // Fetch related albums (one per similar artist) in a follow-up.
                 // Pictures load lazily per visible row via get_or_request.
-                let albums_task = if artist_ids.is_empty() {
-                    Task::none()
-                } else {
-                    self.load_track_detail_related_albums(artist_ids)
-                };
+                let albums_task =
+                    if artist_ids.is_empty() { Task::none() } else { self.load_track_detail_related_albums(artist_ids) };
                 self.rebuild_track_detail_rows();
                 albums_task
             }
@@ -1038,10 +953,7 @@ impl AppModel {
     }
 
     /// Handle feed loaded result
-    pub fn handle_feed_loaded(
-        &mut self,
-        result: Result<Vec<FeedActivity>, String>,
-    ) -> Task<cosmic::Action<Message>> {
+    pub fn handle_feed_loaded(&mut self, result: Result<Vec<FeedActivity>, String>) -> Task<cosmic::Action<Message>> {
         self.is_loading = false;
         match result {
             Ok(activities) => {
@@ -1081,10 +993,7 @@ impl AppModel {
     }
 
     /// Activate an Explore card/promo target.
-    pub fn handle_open_explore_target(
-        &mut self,
-        target: crate::tidal::models::ExploreTarget,
-    ) -> Task<cosmic::Action<Message>> {
+    pub fn handle_open_explore_target(&mut self, target: crate::tidal::models::ExploreTarget) -> Task<cosmic::Action<Message>> {
         use crate::tidal::models::ExploreTarget;
         match target {
             ExploreTarget::Album(id) => self.handle_show_album_detail_by_id(id),
@@ -1105,11 +1014,7 @@ impl AppModel {
         self.explore_loading = false;
         match result {
             Ok(page) => {
-                tracing::info!(
-                    "Loaded explore page '{}' ({} sections)",
-                    page.title,
-                    page.sections.len()
-                );
+                tracing::info!("Loaded explore page '{}' ({} sections)", page.title, page.sections.len());
                 // Collect every cover URL across the page for preloading.
                 let mut urls: Vec<String> = Vec::new();
                 for section in &page.sections {
@@ -1149,10 +1054,7 @@ impl AppModel {
     }
 
     /// Handle profiles loaded result
-    pub fn handle_profiles_loaded(
-        &mut self,
-        result: Result<Vec<Artist>, String>,
-    ) -> Task<cosmic::Action<Message>> {
+    pub fn handle_profiles_loaded(&mut self, result: Result<Vec<Artist>, String>) -> Task<cosmic::Action<Message>> {
         self.is_loading = false;
         match result {
             Ok(mut artists) => {

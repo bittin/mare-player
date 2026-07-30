@@ -74,10 +74,12 @@ build-vendored-standalone *args: vendor-extract
     cargo build --release --no-default-features --features wgpu --frozen --offline {{ args }}
     cp -f {{ cargo-target-dir / 'release' / name }} {{ cargo-target-dir / 'release' / standalone-name }}
 
-# Runs a clippy check, unused import check, and security audit
+# Runs a formatting check, clippy check, unused import check, and security audit
 check *args:
     #!/usr/bin/env bash
     set -euo pipefail
+    echo "Checking formatting..."
+    cargo fmt --all -- --check
     cargo clippy --all-features {{ args }} -- -W dead_code -D warnings
     echo "Checking for unused imports..."
     if command -v cargo >/dev/null 2>&1 && cargo --list | grep -q machete; then
@@ -92,16 +94,19 @@ check *args:
         cargo audit \
             --ignore RUSTSEC-2024-0436 `# paste (unmaintained) — via metal/accesskit_windows → wgpu/iced` \
             --ignore RUSTSEC-2026-0186 `# memmap2 (unsound) — via cosmic-freedesktop-icons / cosmic-text → libcosmic` \
-            --ignore RUSTSEC-2026-0173 `# proc-macro-error2 (unmaintained) — via i18n-embed-fl` \
             --ignore RUSTSEC-2026-0192 `# ttf-parser (unmaintained) — via ab_glyph/sctk-adwaita → winit → libcosmic` \
             --ignore RUSTSEC-2026-0206 `# rustybuzz (unmaintained) — via resvg/usvg → iced_tiny_skia → iced → libcosmic (SVG/text shaping)` \
-            --ignore RUSTSEC-2026-0194 `# quick-xml DoS — build-time only via wayland-scanner (parses trusted bundled protocol XML, not runtime input); pinned to ^0.39 by ashpd→wayland-client, no in-range fix` \
-            --ignore RUSTSEC-2026-0195 `# quick-xml DoS — same wayland-scanner build-time path; can't reach >=0.41 until upstream bumps`
+            --ignore RUSTSEC-2026-0194 `# quick-xml DoS — via pprof→inferno 0.11→quick-xml 0.26; the SIGUSR1 flamegraph profiler is debug-builds-only and parses its own output, never untrusted input. pprof 0.15 (latest) pins inferno ^0.11, so the fixed quick-xml >=0.41 is out of reach until pprof moves to inferno 0.12` \
+            --ignore RUSTSEC-2026-0195 `# quick-xml DoS — same pprof→inferno→quick-xml 0.26 path. (The old wayland-scanner path is fixed: 0.31.11 moved to quick-xml 0.41.)`
     else
         echo "cargo-audit not found, skipping security audit (install with: cargo install cargo-audit)"
     fi
     echo "Checking i18n locale completeness..."
     just i18n-check
+
+# Reformat the whole workspace (fixes what `just check`'s rustfmt gate reports)
+fmt:
+    cargo fmt --all
 
 # Run tests (override features via: just features='--no-default-features' test)
 test *args:

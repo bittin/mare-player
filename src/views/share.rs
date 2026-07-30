@@ -14,7 +14,7 @@ use cosmic::widget::{self, button, text};
 use crate::fl;
 use crate::messages::Message;
 use crate::state::AppModel;
-use crate::views::components::{fading_standard_text, fading_suggested_text};
+use crate::views::components::{back_button, fading_standard_text, fading_suggested_text};
 
 impl AppModel {
     /// Render the share prompt dialog.
@@ -29,43 +29,31 @@ impl AppModel {
         is_video: bool,
     ) -> Element<'_, Message> {
         let header = widget::Row::new()
-            .push(
-                button::icon(widget::icon::from_name("go-previous-symbolic"))
-                    .on_press(Message::CancelShare)
-                    .padding(4),
-            )
+            .push(back_button(Message::CancelShare))
             .push(text(fl!("share")).size(18))
             .spacing(8)
             .align_y(Alignment::Center);
 
-        let description = text(fl!("share-description"))
-            .size(12)
-            .align_x(Horizontal::Center)
-            .width(Length::Fill);
+        let description = text(fl!("share-description")).size(12).align_x(Horizontal::Center).width(Length::Fill);
 
-        let track_label = text(fl!("share-track", title = track_title.clone()))
-            .size(14)
-            .wrapping(Wrapping::None);
+        let track_label = text(fl!("share-track", title = track_title.clone())).size(14).wrapping(Wrapping::None);
         let track_btn = button::custom(fading_suggested_text(track_label))
             .on_press(Message::ShareTrack(track_id, track_title, is_video))
             .width(Length::Fill)
             .class(cosmic::theme::Button::Suggested);
 
-        let album_btn: Option<Element<'_, Message>> =
-            if let (Some(id), Some(title)) = (album_id, album_title) {
-                let album_label = text(fl!("share-album", title = title.clone()))
-                    .size(14)
-                    .wrapping(Wrapping::None);
-                Some(
-                    button::custom(fading_standard_text(album_label))
-                        .on_press(Message::ShareAlbum(id, title))
-                        .width(Length::Fill)
-                        .class(cosmic::theme::Button::Standard)
-                        .into(),
-                )
-            } else {
-                None
-            };
+        let album_btn: Option<Element<'_, Message>> = if let (Some(id), Some(title)) = (album_id, album_title) {
+            let album_label = text(fl!("share-album", title = title.clone())).size(14).wrapping(Wrapping::None);
+            Some(
+                button::custom(fading_standard_text(album_label))
+                    .on_press(Message::ShareAlbum(id, title))
+                    .width(Length::Fill)
+                    .class(cosmic::theme::Button::Standard)
+                    .into(),
+            )
+        } else {
+            None
+        };
 
         let mut content = widget::Column::new()
             .push(header)
@@ -75,9 +63,7 @@ impl AppModel {
             .push(track_btn);
 
         if let Some(album) = album_btn {
-            content = content
-                .push(widget::space::vertical().height(8))
-                .push(album);
+            content = content.push(widget::space::vertical().height(8)).push(album);
         }
 
         content.spacing(4).padding(12).width(Length::Fill).into()
