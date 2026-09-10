@@ -132,11 +132,19 @@ impl ImageCache {
             Ok(data) => {
                 let cached = CachedImage { data: Arc::new(data) };
 
-                // Save to disk cache
-                self.save_to_disk(url, &cached.data).await;
-
                 // Add to memory cache
                 self.add_to_memory_cache(url, cached.clone()).await;
+
+                // Persist in the background. The caller is decoding this image
+                // for a widget that is waiting to paint; it must not wait on
+                // the cache database, whose single connection is shared with
+                // every other image and with the view cache.
+                let this = self.clone();
+                let url = url.to_string();
+                let data = cached.data.clone();
+                tokio::spawn(async move {
+                    this.save_to_disk(&url, &data).await;
+                });
 
                 Some(cached)
             }
@@ -601,9 +609,21 @@ mod tests {
         let cache = temp_cache(1024 * 1024).await;
 
         assert_eq!(cache.get_or_load(&url).await.map(|c| (*c.data).clone()), Some(png));
-        // Promoted into the memory tier and persisted to the db tier.
+        // Promoted into the memory tier synchronously, persisted to the db
+        // tier in the background (see `get_or_load`).
         assert!(cache.memory_cache.read().await.contains_key(&url as &str));
-        assert!(cache.load_from_disk(&url).await.is_some());
+        assert!(wait_for_disk(&cache, &url).await, "image never reached the db tier");
+    }
+
+    /// Wait for a background `save_to_disk` to land, up to two seconds.
+    async fn wait_for_disk(cache: &ImageCache, url: &str) -> bool {
+        for _ in 0..200 {
+            if cache.load_from_disk(url).await.is_some() {
+                return true;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        false
     }
 
     #[tokio::test]

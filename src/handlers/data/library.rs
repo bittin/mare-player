@@ -29,7 +29,7 @@ impl AppModel {
                     client.get_user_playlists(Some(50), None).await.map_err(|e| e.to_string())
                 };
                 if let Ok(ref playlists) = result {
-                    crate::handlers::view_cache::cache_put(db, "library:playlists", playlists).await;
+                    crate::handlers::view_cache::cache_put(db, "library:playlists", playlists);
                 }
                 result
             },
@@ -49,7 +49,7 @@ impl AppModel {
                     client.get_playlist_tracks(&playlist_uuid, None, None).await.map_err(|e| e.to_string())
                 };
                 if let Ok(ref tracks) = result {
-                    crate::handlers::view_cache::cache_put(db, &key, tracks).await;
+                    crate::handlers::view_cache::cache_put(db, &key, tracks);
                 }
                 result
             },
@@ -68,7 +68,7 @@ impl AppModel {
                     client.get_user_favorite_albums(None).await.map_err(|e| e.to_string())
                 };
                 if let Ok(ref albums) = result {
-                    crate::handlers::view_cache::cache_put(db, "library:albums", albums).await;
+                    crate::handlers::view_cache::cache_put(db, "library:albums", albums);
                 }
                 result
             },
@@ -88,7 +88,7 @@ impl AppModel {
                     client.get_album_tracks(&album_id, None, None).await.map_err(|e| e.to_string())
                 };
                 if let Ok(ref tracks) = result {
-                    crate::handlers::view_cache::cache_put(db, &key, tracks).await;
+                    crate::handlers::view_cache::cache_put(db, &key, tracks);
                 }
                 result
             },
@@ -107,7 +107,7 @@ impl AppModel {
                     client.get_user_favorite_tracks(None).await.map_err(|e| e.to_string())
                 };
                 if let Ok(ref tracks) = result {
-                    crate::handlers::view_cache::cache_put(db, "favorites:tracks", tracks).await;
+                    crate::handlers::view_cache::cache_put(db, "favorites:tracks", tracks);
                 }
                 result
             },
@@ -126,7 +126,7 @@ impl AppModel {
                     client.get_mixes().await.map_err(|e| e.to_string())
                 };
                 if let Ok(ref mixes) = result {
-                    crate::handlers::view_cache::cache_put(db, "library:mixes", mixes).await;
+                    crate::handlers::view_cache::cache_put(db, "library:mixes", mixes);
                 }
                 result
             },
@@ -146,7 +146,7 @@ impl AppModel {
                     client.get_mix_tracks(&mix_id).await.map_err(|e| e.to_string())
                 };
                 if let Ok(ref tracks) = result {
-                    crate::handlers::view_cache::cache_put(db, &key, tracks).await;
+                    crate::handlers::view_cache::cache_put(db, &key, tracks);
                 }
                 result
             },
@@ -190,7 +190,7 @@ impl AppModel {
                 // Cache the result (including "no credits") so re-opening the
                 // view paints instantly next time.
                 if let Ok(ref credits) = result {
-                    crate::handlers::view_cache::cache_put(db, &key, credits).await;
+                    crate::handlers::view_cache::cache_put(db, &key, credits);
                 }
                 result
             },
@@ -216,7 +216,7 @@ impl AppModel {
                 // Cache the result (including "no lyrics") so the lyrics view
                 // and the now-playing icon check read it instantly next time.
                 if let Ok(ref lyrics) = result {
-                    crate::handlers::view_cache::cache_put(db, &key, lyrics).await;
+                    crate::handlers::view_cache::cache_put(db, &key, lyrics);
                 }
                 result
             },
@@ -250,7 +250,7 @@ impl AppModel {
                 };
                 let has = match lyrics {
                     Some(l) => {
-                        crate::handlers::view_cache::cache_put(db, &key, &l).await;
+                        crate::handlers::view_cache::cache_put(db, &key, &l);
                         !l.is_empty()
                     }
                     None => false,
@@ -325,7 +325,7 @@ impl AppModel {
                     client.get_feed().await.map_err(|e| e.to_string())
                 };
                 if let Ok(ref feed) = result {
-                    crate::handlers::view_cache::cache_put(db, "feed", feed).await;
+                    crate::handlers::view_cache::cache_put(db, "feed", feed);
                 }
                 result
             },
@@ -357,7 +357,7 @@ impl AppModel {
                     client.get_followed_artists().await.map_err(|e| e.to_string())
                 };
                 if let Ok(ref artists) = result {
-                    crate::handlers::view_cache::cache_put(db, "profiles", artists).await;
+                    crate::handlers::view_cache::cache_put(db, "profiles", artists);
                 }
                 result
             },
@@ -612,7 +612,7 @@ impl AppModel {
                     client.get_album_review(&album_id).await.map_err(|e| e.to_string())
                 };
                 if let Ok(ref review) = result {
-                    crate::handlers::view_cache::cache_put(db, &key, review).await;
+                    crate::handlers::view_cache::cache_put(db, &key, review);
                 }
                 result
             },

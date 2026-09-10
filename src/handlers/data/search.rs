@@ -25,7 +25,7 @@ impl AppModel {
                     client.search(&query, 20).await.map_err(|e| e.to_string())
                 };
                 if let Ok(ref results) = result {
-                    crate::handlers::view_cache::cache_put(db, &key, results).await;
+                    crate::handlers::view_cache::cache_put(db, &key, results);
                 }
                 result
             },
