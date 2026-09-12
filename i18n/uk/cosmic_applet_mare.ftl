@@ -8,10 +8,12 @@ open-browser = Відкрити браузер
 cancel = Скасувати
 verifying-auth = Перевірка автентифікації...
 verifying-auth-wait = Зачекайте, поки ми підтвердимо ваш вхід.
-oauth-open-url = Відкрийте цю URL-адресу у браузері:
-oauth-enter-code = Або введіть код: {$code}
-waiting-for-login = Очікування входу...
-complete-login-in-browser = Завершіть вхід у браузері, потім поверніться сюди.
+login-step-browser = 1. Відкрийте сторінку входу TIDAL і увійдіть:
+login-returns-here = Після входу ви одразу повернетеся сюди — копіювати нічого не потрібно.
+login-step-paste = 2. Потім браузер перейде на сторінку, яка не завантажиться. Скопіюйте її адресу та вставте сюди:
+login-redirect-placeholder = https://tidal.com/android/login/auth?code=…
+login-finish = Завершити вхід
+login-retry = Це посилання для входу вже використане або застаріло — відкрийте браузер знову та скопіюйте нову адресу.
 preparing-login = Підготовка входу...
 
 # Навігація
@@ -114,14 +116,10 @@ debug-unoptimized = (неоптимізовано)
 
 # Налаштування
 audio-quality = Якість звуку
-quality-low = Низька (96 кбіт/с)
-quality-high = Висока (320 кбіт/с)
-quality-lossless = Без втрат (якість CD)
-quality-hires = Hi-Res (майстер-якість)
-quality-description-low = 96 кбіт/с AAC — Менше використання даних
-quality-description-high = 320 кбіт/с AAC — Гарна якість
-quality-description-lossless = FLAC 16 біт/44,1 кГц — Якість CD
-quality-description-hires = FLAC до 24 біт/192 кГц — Майстер-якість (потрібен HiFi Plus)
+quality-description-low = Найменше використання даних
+quality-description-high = Із втратами, але економить трафік
+quality-description-lossless = Якість CD
+quality-description-hires = Потрібна підписка з підтримкою Hi-Res
 account = Обліковий запис
 about = Про програму
 version = Версія

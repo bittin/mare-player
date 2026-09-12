@@ -43,14 +43,29 @@ jobs:
             libgstreamer-plugins-base1.0-dev
 
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@5595ccaf912efad79be6eef63a5619ff05969be3 # v4.37.6
+        uses: github/codeql-action/init@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9
         with:
           languages: rust
 
+      # Same dependency cache as CI, under its own key: CodeQL builds through
+      # its extractor, so its artifacts are not interchangeable with the ones
+      # the build or coverage jobs produce.
+      - name: Cache cargo registry and build artifacts
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          shared-key: codeql
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
       - name: Build
-        run: cargo build --verbose
+        run: |
+          # The extractor builds its database by watching the compiler work, so
+          # our own crates have to compile here even on a cache hit — only the
+          # dependencies are safe to restore. Without this, a push that changed
+          # nothing cargo cares about would analyse almost nothing.
+          cargo clean -p cosmic-applet-mare -p mare-video-window
+          cargo build --verbose
 
       - name: Perform CodeQL Analysis
-        uses: github/codeql-action/analyze@5595ccaf912efad79be6eef63a5619ff05969be3 # v4.37.6
+        uses: github/codeql-action/analyze@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9
         with:
           category: "/language:rust"

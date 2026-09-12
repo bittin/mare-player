@@ -1,30 +1,29 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: GPL-3.0-only
 
 //! TIDAL client wrapper for the COSMIC applet.
 //!
 //! This module wraps the `tidlers` crate and provides a high-level async API
 //! for interacting with TIDAL's services including:
-//! - OAuth authentication
+//! - OAuth PKCE authentication
 //! - Playlist and album browsing
 //! - Artist and album detail pages
 //! - Track search
 //! - User favorites (tracks and albums)
 //! - HiRes/DASH streaming support
 
-use super::auth::{AuthManager, AuthState, DeviceCodeInfo, StoredCredentials, UserProfile};
+use super::auth::{AuthManager, AuthState, LoginRequest, StoredCredentials, UserProfile};
+use super::client_identity;
 use super::models::{
     Album, Artist, CreditContributor, CreditRole, ExploreCard, ExplorePage, ExploreSection, ExploreTarget, FeedActivity,
-    FeedItem, Mix, PageLink, Playlist, SearchResults, Track, TrackCredits, TrackLyrics, tidal_cover_url, tidal_promo_image_url,
+    FeedItem, Mix, PageLink, Playlist, SearchResults, StreamQuality, Track, TrackCredits, TrackLyrics, tidal_cover_url,
+    tidal_promo_image_url,
 };
 use base64::{Engine, engine::general_purpose};
-use reqwest::header::{AUTHORIZATION, HeaderMap, HeaderValue};
+use reqwest::header::AUTHORIZATION;
 use serde::Deserialize;
+use std::collections::HashSet;
 use std::sync::Arc;
-use tidlers::{
-    TidalClient,
-    auth::TidalAuth,
-    client::models::{collection::favorites::FavoriteResourceType, playback::AudioQuality},
-};
+use tidlers::{TidalClient, auth::TidalAuth, client::models::collection::favorites::FavoriteResourceType};
 use tokio::sync::Mutex;
 use tracing::{debug, error, info, warn};
 
@@ -56,12 +55,16 @@ fn is_tidlers_network_error(e: &tidlers::error::TidalError) -> bool {
 /// inline DASH manifest for FLAC/hi-res.
 #[derive(Debug, Clone)]
 pub enum PlaybackUrl {
-    /// Direct streaming URL (for Low/High/Lossless quality)
-    Direct(String, Option<f32>),
-    /// Inline DASH manifest XML (for HiRes quality). Played through a `data:`
-    /// URI so nothing is written to disk; its embedded segment URLs are
-    /// absolute and carry short-lived tokens.
-    DashManifest(String, Option<f32>),
+    /// Direct streaming URL, from a `vnd.tidal.bts` manifest.
+    ///
+    /// Which tiers arrive this way is the client's choice, not ours: the PKCE
+    /// client we authenticate as serves DASH for both lossless tiers, leaving
+    /// this for the AAC ones.
+    Direct(String, Option<f32>, Option<StreamQuality>),
+    /// Inline DASH manifest XML — both FLAC tiers, hi-res and lossless alike.
+    /// Played through a `data:` URI so nothing is written to disk; its embedded
+    /// segment URLs are absolute and carry short-lived tokens.
+    DashManifest(String, Option<f32>, Option<StreamQuality>),
 }
 
 impl PlaybackUrl {
@@ -78,8 +81,8 @@ impl PlaybackUrl {
     /// manifests would not work inline — but TIDAL doesn't serve those here.
     pub fn as_url(&self) -> String {
         match self {
-            PlaybackUrl::Direct(url, _) => url.clone(),
-            PlaybackUrl::DashManifest(manifest, _) => {
+            PlaybackUrl::Direct(url, _, _) => url.clone(),
+            PlaybackUrl::DashManifest(manifest, _, _) => {
                 let b64 = general_purpose::STANDARD.encode(manifest.as_bytes());
                 format!("data:application/dash+xml;base64,{b64}")
             }
@@ -94,7 +97,16 @@ impl PlaybackUrl {
     /// Get the replay gain value in dB, if available from the TIDAL API.
     pub fn replay_gain_db(&self) -> Option<f32> {
         match self {
-            PlaybackUrl::Direct(_, rg) | PlaybackUrl::DashManifest(_, rg) => *rg,
+            PlaybackUrl::Direct(_, rg, _) | PlaybackUrl::DashManifest(_, rg, _) => *rg,
+        }
+    }
+
+    /// What TIDAL actually served for this stream, when the response said so.
+    /// See [`StreamQuality`] for why the response is the only trustworthy
+    /// source of that.
+    pub fn stream_quality(&self) -> Option<StreamQuality> {
+        match self {
+            PlaybackUrl::Direct(_, _, q) | PlaybackUrl::DashManifest(_, _, q) => q.clone(),
         }
     }
 }
@@ -106,7 +118,7 @@ impl std::fmt::Display for PlaybackUrl {
     /// tokens). Never print the raw URL / manifest in logs.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            PlaybackUrl::Direct(url, rg) => {
+            PlaybackUrl::Direct(url, rg, _) => {
                 let base = url.split('?').next().unwrap_or(url);
                 write!(f, "Direct({base}")?;
                 if let Some(rg) = rg {
@@ -114,7 +126,7 @@ impl std::fmt::Display for PlaybackUrl {
                 }
                 write!(f, ")")
             }
-            PlaybackUrl::DashManifest(manifest, rg) => {
+            PlaybackUrl::DashManifest(manifest, rg, _) => {
                 write!(f, "DashManifest(<inline manifest, {} bytes>", manifest.len())?;
                 if let Some(rg) = rg {
                     write!(f, ", {rg:+.2}dB")?;
@@ -322,6 +334,52 @@ impl std::fmt::Display for TidalError {
 
 impl std::error::Error for TidalError {}
 
+/// TIDAL's authorize endpoint, which the PKCE flow starts at.
+const AUTHORIZE_URL: &str = "https://login.tidal.com/authorize";
+
+/// The `appMode` to ask the login page to render as.
+///
+/// This decides which sign-in methods the page offers. `web` shows email,
+/// *Continue with Google* and *Continue with Apple* — for a linked account,
+/// one click against a session the browser already has. `android`, which
+/// tidlers sends, shows email alone: an address, then a code mailed to it.
+///
+/// Nothing else about the flow changes; the token exchange never sees it.
+const LOGIN_APP_MODE: &str = "web";
+
+/// Build the URL that starts the sign-in, from the PKCE parameters tidlers
+/// generated.
+///
+/// Built here rather than by tidlers' `initiate_pkce_login` so the login page
+/// is ours to choose (see [`LOGIN_APP_MODE`]). Everything the token exchange
+/// later verifies — client id, redirect URI, challenge, unique key — is taken
+/// straight from the same `PkceConfig` tidlers will exchange with, keeping the
+/// two halves in step.
+fn authorize_url(pkce: &tidlers::auth::pkce::PkceConfig) -> Result<String, serde_urlencoded::ser::Error> {
+    let query = serde_urlencoded::to_string([
+        ("response_type", "code"),
+        ("redirect_uri", pkce.redirect_uri.as_str()),
+        ("client_id", pkce.client_id.as_str()),
+        ("lang", "EN"),
+        ("appMode", LOGIN_APP_MODE),
+        ("client_unique_key", pkce.client_unique_key.as_str()),
+        ("code_challenge", pkce.code_challenge.as_str()),
+        ("code_challenge_method", "S256"),
+        ("restrict_signup", "true"),
+    ])?;
+    Ok(format!("{AUTHORIZE_URL}?{query}"))
+}
+
+/// The authorize URL built from a throwaway PKCE config, for tests.
+///
+/// Exists so the choice of login page — the difference between "type the code
+/// we emailed you" and "Continue with Google" — is covered without a login.
+#[doc(hidden)]
+pub fn authorize_url_for_test() -> String {
+    let auth = TidalAuth::with_pkce();
+    authorize_url(&auth.pkce_config).unwrap_or_default()
+}
+
 /// High-level TIDAL client for the COSMIC applet
 pub struct TidalAppClient {
     /// The underlying tidlers client (if authenticated)
@@ -330,7 +388,15 @@ pub struct TidalAppClient {
     /// Authentication manager
     auth_manager: AuthManager,
     /// Current audio quality setting
-    audio_quality: AudioQuality,
+    audio_quality: crate::config::AudioQuality,
+    /// Track ids we've already logged a lower-than-requested tier for.
+    ///
+    /// Which tiers a track exists in is a property of the recording, not an
+    /// event: most catalogue is 16-bit/44.1 kHz and simply has no hi-res master
+    /// to serve. Every track also resolves twice (once to play, once to preload
+    /// for gapless), so the note is logged once per track id rather than once
+    /// per resolution.
+    warned_downgrades: Arc<std::sync::Mutex<HashSet<String>>>,
 }
 
 impl Default for TidalAppClient {
@@ -418,7 +484,12 @@ impl TidalAppClient {
 
     /// Create a new TidalAppClient
     pub fn new() -> Self {
-        Self { client: Arc::new(Mutex::new(None)), auth_manager: AuthManager::new(), audio_quality: AudioQuality::High }
+        Self {
+            client: Arc::new(Mutex::new(None)),
+            auth_manager: AuthManager::new(),
+            audio_quality: crate::config::AudioQuality::High,
+            warned_downgrades: Arc::new(std::sync::Mutex::new(HashSet::new())),
+        }
     }
 
     /// Get the current authentication state
@@ -439,12 +510,17 @@ impl TidalAppClient {
     }
 
     /// Set the audio quality for playback
-    pub async fn set_audio_quality(&mut self, quality: AudioQuality) {
+    pub async fn set_audio_quality(&mut self, quality: crate::config::AudioQuality) {
         info!("Setting audio quality to: {:?}", quality);
-        self.audio_quality = quality.clone();
+        self.audio_quality = quality;
+        // A different tier may or may not be entitled, so let the downgrade
+        // warning speak once more per track under the new setting.
+        if let Ok(mut seen) = self.warned_downgrades.lock() {
+            seen.clear();
+        }
         let mut client_guard = self.client.lock().await;
         if let Some(client) = client_guard.as_mut() {
-            client.set_audio_quality(quality);
+            client.set_audio_quality(quality.to_tidlers());
         }
     }
 
@@ -579,6 +655,21 @@ impl TidalAppClient {
         // Try to restore the session from the stored JSON
         match TidalClient::from_json(&credentials.session_json) {
             Ok(mut client) => {
+                // Sessions minted by the old device-code flow are capped at
+                // LOSSLESS whatever the account is entitled to, and no request
+                // parameter lifts that — so there is nothing worth restoring
+                // them for. Drop it and send the user through PKCE once.
+                if !client.session.auth.pkce_login {
+                    info!(
+                        "Stored session predates PKCE login (client id {}); discarding it so the user can sign in for hi-res",
+                        client.session.auth.client_id
+                    );
+                    let _ = AuthManager::delete_credentials();
+                    self.auth_manager.set_state(AuthState::NotAuthenticated);
+                    return Ok(false);
+                }
+                client_identity::verify(&client.session.auth.pkce_config.client_id);
+
                 // Log current token state
                 if let (Some(expiry), Some(last_refresh)) =
                     (client.session.auth.refresh_expiry, client.session.auth.last_refresh_time)
@@ -679,7 +770,7 @@ impl TidalAppClient {
                             info!("Token will expire in {}s (~{})", remaining, format_duration(remaining),);
                         }
 
-                        client.set_audio_quality(self.audio_quality.clone());
+                        client.set_audio_quality(self.audio_quality.to_tidlers());
                         *self.client.lock().await = Some(client);
                         self.auth_manager.set_state(AuthState::Authenticated { profile });
 
@@ -713,66 +804,66 @@ impl TidalAppClient {
         }
     }
 
-    /// Start the OAuth device code flow
-    pub async fn start_oauth_flow(&mut self) -> TidalResult<DeviceCodeInfo> {
-        info!("Starting OAuth device code flow");
+    /// Start the OAuth **PKCE** login flow.
+    ///
+    /// Returns the TIDAL authorize URL the user has to open; the login is
+    /// finished by handing the browser's redirect URL to
+    /// [`Self::complete_login`]. Which client we authenticate as decides the
+    /// stream ceiling independently of the subscription, and PKCE is the only
+    /// flow whose client is granted the hi-res tier — see
+    /// [`super::client_identity`] for the measurements.
+    ///
+    /// The half-finished client is parked in `self.client` because it holds the
+    /// PKCE code verifier that the redirect's `code` is exchanged against.
+    pub async fn start_login(&mut self) -> TidalResult<LoginRequest> {
+        info!("Starting OAuth PKCE login flow");
 
-        // tidlers' default OAuth client is entitled to lossless/hi-res playback
-        // (playbackinfopostpaywall returns FLAC). Some TIDAL clients are capped
-        // at HIGH/AAC regardless of the account tier, so which client we
-        // authenticate as matters -- don't override it.
-        let auth = TidalAuth::with_oauth();
+        let mut auth = TidalAuth::with_pkce();
+        // tidlers defaults to the https redirect, which only the browser can
+        // receive. When this desktop routes `tidal://` to us, ask for that one
+        // instead and the code comes home by itself — see `login_uri`.
+        let redirect_uri = super::login_uri::redirect_uri();
+        auth.pkce_config.redirect_uri = redirect_uri.to_string();
+
         let client = TidalClient::new(&auth);
+        client_identity::verify(&client.session.auth.pkce_config.client_id);
 
-        match client.get_oauth_link().await {
-            Ok(oauth) => {
-                let device_info = DeviceCodeInfo {
-                    verification_uri_complete: format!("https://{}", oauth.verification_uri_complete),
-                    user_code: oauth.user_code.clone(),
-                    device_code: oauth.device_code.clone(),
-                    expires_in: oauth.expires_in,
-                    interval: oauth.interval,
-                };
+        match authorize_url(&client.session.auth.pkce_config) {
+            Ok(authorize_url) => {
+                self.auth_manager.set_state(AuthState::AwaitingUserAuth { authorize_url: authorize_url.clone() });
 
-                self.auth_manager.set_state(AuthState::AwaitingUserAuth {
-                    verification_uri: device_info.verification_uri_complete.clone(),
-                    user_code: device_info.user_code.clone(),
-                });
-
-                // Store the client for later completion
+                // Park the client (and with it the code verifier) for `complete_login`.
                 *self.client.lock().await = Some(client);
 
-                info!("OAuth flow started, awaiting user authorization");
-                Ok(device_info)
+                info!(redirect_uri, "PKCE login started, awaiting user authorization");
+                Ok(LoginRequest { authorize_url, delivers_itself: redirect_uri == super::login_uri::CALLBACK_REDIRECT_URI })
             }
             Err(e) => {
-                error!("Failed to get OAuth link: {:?}", e);
+                error!("Failed to build the PKCE authorize URL: {:?}", e);
                 self.auth_manager.set_state(AuthState::Failed(format!("{:?}", e)));
                 Err(TidalError::AuthenticationFailed(format!("{:?}", e)))
             }
         }
     }
 
-    /// Wait for the user to complete OAuth authorization
-    pub async fn wait_for_oauth(&mut self, device_code: &str, expires_in: u64, interval: u64) -> TidalResult<()> {
-        info!(
-            "Waiting for user to complete OAuth authorization (device_code: {}..., expires_in: {}s, interval: {}s)",
-            &device_code[..8.min(device_code.len())],
-            expires_in,
-            interval
-        );
+    /// Finish the PKCE login with the URL the browser was redirected to.
+    ///
+    /// `redirect_url` is the full `https://tidal.com/android/login/auth?code=…`
+    /// address the user pasted back; only its `code` parameter is used.
+    pub async fn complete_login(&mut self, redirect_url: &str) -> TidalResult<()> {
+        info!("Completing PKCE login from the pasted redirect URL");
 
         let mut client_guard = self.client.lock().await;
         let client = client_guard.as_mut().ok_or_else(|| {
-            error!("wait_for_oauth called but self.client is None!");
+            error!("complete_login called without a login in progress!");
             TidalError::NotAuthenticated
         })?;
 
-        info!("Calling tidlers wait_for_oauth...");
-        match client.wait_for_oauth(device_code, expires_in, interval, None).await {
-            Ok(auth_response) => {
-                info!("OAuth authorization completed successfully!");
-                debug!("Auth response received: user_id={}", auth_response.user_id);
+        match client.finish_pkce_login(redirect_url.trim()).await {
+            Ok(()) => {
+                info!("PKCE authorization completed successfully!");
+                client_identity::verify(&client.session.auth.pkce_config.client_id);
+                debug!("Signed in as TIDAL client {:?}", client.session.auth.client_name);
 
                 // Log token expiry info
                 if let (Some(expiry), Some(last_refresh)) =
@@ -828,7 +919,7 @@ impl TidalAppClient {
                     warn!("Failed to store credentials: {}", e);
                 }
 
-                client.set_audio_quality(self.audio_quality.clone());
+                client.set_audio_quality(self.audio_quality.to_tidlers());
                 // Drop the lock before calling fetch_and_set_subscription_plan
                 // which needs &mut self (and internally re-acquires the lock).
                 drop(client_guard);
@@ -841,9 +932,13 @@ impl TidalAppClient {
                 Ok(())
             }
             Err(e) => {
-                error!("OAuth authorization failed with error: {:?}", e);
+                // Keep the client: it holds the code verifier, and the authorize
+                // URL we already handed the user stays valid. A failed exchange
+                // is nearly always a code that was spent or has expired (they
+                // are single-use and short-lived), so the way out is another
+                // trip through the browser with the *same* URL.
+                error!("PKCE authorization failed with error: {:?}", e);
                 self.auth_manager.set_state(AuthState::Failed(format!("{:?}", e)));
-                *client_guard = None;
                 Err(TidalError::AuthenticationFailed(format!("{:?}", e)))
             }
         }
@@ -1249,7 +1344,7 @@ impl TidalAppClient {
         let client_guard = self.client.lock().await;
         let client = client_guard.as_ref().ok_or(TidalError::NotAuthenticated)?;
 
-        info!("Getting playback URL for track: {} with quality: {:?} (cache miss)", track_id, self.audio_quality);
+        info!("Getting playback URL for track: {} with quality: {:?}", track_id, self.audio_quality);
 
         // Get auth info for our own request (we need the raw manifest)
         let access_token = client.session.auth.access_token.as_ref().ok_or_else(|| {
@@ -1261,7 +1356,9 @@ impl TidalAppClient {
 
         let url = format!(
             "https://api.tidal.com/v1/tracks/{}/playbackinfopostpaywall?audioquality={}&playbackmode=STREAM&assetpresentation=FULL&countryCode={}",
-            track_id, self.audio_quality, country_code
+            track_id,
+            self.audio_quality.tidal_param(),
+            country_code
         );
 
         let http_client = reqwest::Client::new();
@@ -1291,13 +1388,36 @@ impl TidalAppClient {
 
         let audio_mode = parsed.get("audioMode").and_then(|v| v.as_str()).unwrap_or("unknown");
 
+        // What TIDAL *actually served*, which is not necessarily what we asked
+        // for — the backend answers an out-of-reach tier with a lower one
+        // instead of erroring. The only trustworthy source for the badge the
+        // now-playing bar shows; see `StreamQuality` for why.
+        let sample_rate = parsed.get("sampleRate").and_then(|v| v.as_u64()).map(|v| v as u32);
+        let bit_depth = parsed.get("bitDepth").and_then(|v| v.as_u64()).map(|v| v as u32);
+        let stream_quality =
+            (audio_quality != "unknown").then(|| StreamQuality { quality: audio_quality.to_string(), sample_rate, bit_depth });
+
+        if let Some(served) = &stream_quality {
+            let requested = self.audio_quality.tidal_param();
+            if served.quality != requested {
+                // Once per track id — see `warned_downgrades`.
+                let first_time = self.warned_downgrades.lock().map(|mut seen| seen.insert(track_id.to_string())).unwrap_or(true);
+                if first_time {
+                    info!(
+                        "TIDAL served {} for a {} request — this track isn't available in the requested tier",
+                        served.quality, requested
+                    );
+                }
+            }
+        }
+
         let replay_gain_db = parsed.get("albumReplayGain").and_then(|v| v.as_f64()).map(|v| v as f32);
 
         let peak_amplitude = parsed.get("albumPeakAmplitude").and_then(|v| v.as_f64()).map(|v| v as f32);
 
         info!(
-            "Playback info received - audio_quality: {}, audio_mode: {}, manifest_mime_type: {}, replay_gain: {:?} dB, peak: {:?}",
-            audio_quality, audio_mode, manifest_mime_type, replay_gain_db, peak_amplitude
+            "Playback info received - audio_quality: {}, audio_mode: {}, manifest_mime_type: {}, sample_rate: {:?}, bit_depth: {:?}, replay_gain: {:?} dB, peak: {:?}",
+            audio_quality, audio_mode, manifest_mime_type, sample_rate, bit_depth, replay_gain_db, peak_amplitude
         );
 
         let manifest_b64 = parsed
@@ -1314,7 +1434,7 @@ impl TidalAppClient {
 
         // Check if this is a DASH manifest (used for HiRes)
         if manifest_mime_type.contains("dash") {
-            info!("DASH manifest detected for HiRes quality - playing inline");
+            info!("DASH manifest detected - playing inline");
             let preview_len = manifest_str.len().min(500);
             let preview: String = manifest_str.chars().take(preview_len).collect();
             debug!("DASH manifest content:\n{}", preview);
@@ -1323,7 +1443,7 @@ impl TidalAppClient {
             // writing it to disk — see `PlaybackUrl::as_url`. The manifest is
             // single-use anyway (its segment URLs carry short-lived tokens), so
             // there is nothing worth persisting.
-            return Ok(PlaybackUrl::DashManifest(manifest_str, replay_gain_db));
+            return Ok(PlaybackUrl::DashManifest(manifest_str, replay_gain_db, stream_quality));
         }
 
         // For non-DASH (JSON manifest with direct URLs)
@@ -1335,7 +1455,7 @@ impl TidalAppClient {
             && let Some(url_str) = first_url.as_str()
         {
             info!("Got direct playback URL");
-            return Ok(PlaybackUrl::Direct(url_str.to_string(), replay_gain_db));
+            return Ok(PlaybackUrl::Direct(url_str.to_string(), replay_gain_db, stream_quality));
         }
 
         Err(TidalError::RequestFailed("No playback URL available".to_string()))
@@ -1641,17 +1761,16 @@ impl TidalAppClient {
     /// re-opening the view paints instantly.
     pub async fn get_track_credits(&self, track_id: &str) -> TidalResult<TrackCredits> {
         self.ensure_valid_token().await?;
-        let ctx = self.auth_context().await?;
 
         debug!("Fetching credits for track {}", track_id);
 
-        let meta_url = format!("https://api.tidal.com/v1/tracks/{}?countryCode={}", track_id, ctx.country_code);
-        let http_client = reqwest::Client::new();
-        let meta_req = http_client.get(&meta_url).header(AUTHORIZATION, format!("Bearer {}", ctx.access_token)).send();
-
         let client_guard = self.client.lock().await;
         let client = client_guard.as_ref().ok_or(TidalError::NotAuthenticated)?;
+
+        // Two legs, run together: the roles, and the catalog extras the
+        // credits endpoint doesn't carry (copyright, ISRC, BPM, release date).
         let credits_req = client.get_track_credits(track_id.to_string(), true);
+        let meta_req = client.get_track(track_id);
 
         let (credits_res, meta_res) = tokio::join!(credits_req, meta_req);
 
@@ -1681,31 +1800,9 @@ impl TidalAppClient {
             .collect();
 
         // ── Catalog extras (best-effort leg) ──────────────────────────────
-        #[derive(Deserialize)]
-        #[serde(rename_all = "camelCase")]
-        struct RawTrackMeta {
-            #[serde(default)]
-            copyright: Option<String>,
-            #[serde(default)]
-            stream_start_date: Option<String>,
-            #[serde(default)]
-            isrc: Option<String>,
-            #[serde(default)]
-            bpm: Option<u32>,
-        }
-
-        let meta: Option<RawTrackMeta> = match meta_res {
-            Ok(resp) if resp.status().is_success() => match resp.json::<RawTrackMeta>().await {
-                Ok(m) => Some(m),
-                Err(e) => {
-                    debug!("Track metadata parse failed for {}: {:?}", track_id, e);
-                    None
-                }
-            },
-            Ok(resp) => {
-                debug!("Track metadata fetch returned HTTP {} for {}", resp.status(), track_id);
-                None
-            }
+        // Missing extras cost a line in the view; they never fail the credits.
+        let meta = match meta_res {
+            Ok(track) => Some(track),
             Err(e) => {
                 debug!("Track metadata fetch failed for {}: {:?}", track_id, e);
                 None
@@ -1724,7 +1821,8 @@ impl TidalAppClient {
                 // `2014-10-27T00:00:00.000+0000` → `2014-10-27`
                 non_empty(m.stream_start_date).map(|d| d.split('T').next().unwrap_or(&d).to_string()),
                 non_empty(m.isrc),
-                m.bpm.filter(|b| *b > 0),
+                // tidlers types BPM as f32; the view shows a whole number.
+                m.bpm.filter(|b| *b > 0.0).map(|b| b.round() as u32),
             ),
             None => (None, None, None, None),
         };
@@ -1757,10 +1855,7 @@ impl TidalAppClient {
     }
     /// Fetch the user's subscription plan.
     ///
-    /// Tries tidlers' built-in `client.subscription()` first (uses the v1
-    /// endpoint internally). If that fails (e.g. because of a type mismatch
-    /// on `premiumAccess`), falls back to a raw HTTP call with lenient JSON
-    /// parsing.
+    /// Asks tidlers, which wraps the v1 endpoint.
     ///
     /// Returns a human-readable label such as "HiFi Plus", "HiFi", or "Free".
     /// On any failure the method returns `Ok(None)` so callers can treat the
@@ -1768,7 +1863,6 @@ impl TidalAppClient {
     async fn get_user_subscription(&self) -> TidalResult<Option<String>> {
         self.ensure_valid_token().await?;
 
-        // --- Attempt 1: tidlers built-in subscription() -----------------------
         {
             let client_guard = self.client.lock().await;
             let client = client_guard.as_ref().ok_or(TidalError::NotAuthenticated)?;
@@ -1789,82 +1883,12 @@ impl TidalAppClient {
                     return Ok(label);
                 }
                 Err(e) => {
-                    warn!("tidlers subscription() failed ({}), falling back to raw HTTP", e);
+                    warn!("subscription lookup failed ({e}); the plan badge stays hidden");
                 }
             }
         } // client_guard dropped
 
-        // --- Attempt 2: raw HTTP with lenient JSON parsing --------------------
-        let (user_id, access_token) = {
-            let client_guard = self.client.lock().await;
-            let client = client_guard.as_ref().ok_or(TidalError::NotAuthenticated)?;
-            let uid = match client.session.auth.user_id {
-                Some(id) => id,
-                None => {
-                    warn!("No user ID available – cannot fetch subscription");
-                    return Ok(None);
-                }
-            };
-            let token = match client.session.auth.access_token.as_ref() {
-                Some(t) => t.clone(),
-                None => {
-                    warn!("No access token available – cannot fetch subscription");
-                    return Ok(None);
-                }
-            };
-            (uid, token)
-        }; // client_guard dropped
-
-        let url = format!("https://api.tidal.com/v1/users/{}/subscription", user_id);
-
-        let http_client = reqwest::Client::new();
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            AUTHORIZATION,
-            HeaderValue::from_str(&format!("Bearer {}", access_token))
-                .map_err(|e| TidalError::RequestFailed(format!("Invalid auth header: {}", e)))?,
-        );
-
-        match http_client.get(&url).headers(headers).send().await {
-            Ok(response) => {
-                if !response.status().is_success() {
-                    let status = response.status();
-                    let body = response.text().await.unwrap_or_default();
-                    warn!("Subscription endpoint returned HTTP {}: {}", status, body);
-                    return Ok(None);
-                }
-
-                let body = response.text().await.unwrap_or_default();
-                debug!("Subscription raw response: {}", body);
-
-                // Parse with serde_json::Value first for maximum flexibility —
-                // `premiumAccess` can be a string OR a bool depending on TIDAL
-                // API version / account type.
-                match serde_json::from_str::<serde_json::Value>(&body) {
-                    Ok(v) => {
-                        let premium_access = v.get("premiumAccess").and_then(|p| p.as_str().map(String::from));
-                        let sub_type =
-                            v.get("subscription").and_then(|s| s.get("type")).and_then(|t| t.as_str().map(String::from));
-                        let highest_quality = v.get("highestSoundQuality").and_then(|h| h.as_str().map(String::from));
-
-                        let label =
-                            Self::derive_plan_label(premium_access.as_deref(), sub_type.as_deref(), highest_quality.as_deref());
-                        if let Some(l) = &label {
-                            info!("User subscription plan (via raw HTTP): {}", l);
-                        }
-                        Ok(label)
-                    }
-                    Err(e) => {
-                        warn!("Failed to parse subscription JSON: {}", e);
-                        Ok(None)
-                    }
-                }
-            }
-            Err(e) => {
-                warn!("Failed to fetch subscription info: {:?}", e);
-                Ok(None)
-            }
-        }
+        Ok(None)
     }
 
     /// Derive a human-readable plan label from `subscription.type` and

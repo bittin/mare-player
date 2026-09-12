@@ -8,10 +8,12 @@ open-browser = فتح المتصفح
 cancel = إلغاء
 verifying-auth = جارٍ التحقق من المصادقة...
 verifying-auth-wait = يُرجى الانتظار بينما نؤكد تسجيل دخولك.
-oauth-open-url = افتح هذا الرابط في متصفحك:
-oauth-enter-code = أو أدخل الرمز: {$code}
-waiting-for-login = في انتظار تسجيل الدخول...
-complete-login-in-browser = أكمل تسجيل الدخول في المتصفح، ثم عُد إلى هنا.
+login-step-browser = 1. افتح صفحة تسجيل الدخول إلى TIDAL وسجّل الدخول:
+login-returns-here = سيعيدك تسجيل الدخول إلى هنا مباشرة — لا شيء لنسخه.
+login-step-paste = 2. سينتقل المتصفح بعدها إلى صفحة لا يمكن تحميلها. انسخ عنوانها والصقه هنا:
+login-redirect-placeholder = https://tidal.com/android/login/auth?code=…
+login-finish = إكمال تسجيل الدخول
+login-retry = تم استخدام رابط تسجيل الدخول هذا من قبل أو انتهت صلاحيته — افتح المتصفح مرة أخرى وانسخ العنوان الجديد.
 preparing-login = جارٍ تحضير تسجيل الدخول...
 
 # Navigation
@@ -118,14 +120,10 @@ debug-unoptimized = (غير محسَّن)
 
 # Settings
 audio-quality = جودة الصوت
-quality-low = منخفضة (96 كيلوبت/ث)
-quality-high = عالية (320 كيلوبت/ث)
-quality-lossless = بدون فقدان (جودة القرص المضغوط)
-quality-hires = عالية الدقة (جودة الماستر)
-quality-description-low = AAC بسرعة 96 كيلوبت/ث - تستهلك بيانات أقل
-quality-description-high = AAC بسرعة 320 كيلوبت/ث - جودة جيدة
-quality-description-lossless = FLAC بدقة 16 بت/44.1 كيلوهرتز - جودة القرص المضغوط
-quality-description-hires = FLAC حتى 24 بت/192 كيلوهرتز - جودة الماستر (يتطلب HiFi Plus)
+quality-description-low = أقل استهلاك للبيانات
+quality-description-high = مضغوطة، لكنها خفيفة على البيانات
+quality-description-lossless = جودة القرص المضغوط
+quality-description-hires = يتطلب اشتراكًا يشمل البث عالي الدقة
 account = الحساب
 about = حول
 version = الإصدار

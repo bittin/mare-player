@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: GPL-3.0-only
 
 //! Navigation message handlers for Maré Player.
 //!
@@ -488,7 +488,7 @@ impl AppModel {
                     client.get_artist_info(&id1).await.map_err(|e| e.to_string())
                 };
                 if let Ok(ref artist) = result {
-                    crate::handlers::view_cache::cache_put(db1, &key, artist).await;
+                    crate::handlers::view_cache::cache_put(db1, &key, artist);
                 }
                 result
             },
@@ -503,7 +503,7 @@ impl AppModel {
                     client.get_artist_top_tracks(&id2, Some(20)).await.map_err(|e| e.to_string())
                 };
                 if let Ok(ref tracks) = result {
-                    crate::handlers::view_cache::cache_put(db2, &key, tracks).await;
+                    crate::handlers::view_cache::cache_put(db2, &key, tracks);
                 }
                 result
             },
@@ -518,7 +518,7 @@ impl AppModel {
                     client.get_artist_albums(&id3, Some(50)).await.map_err(|e| e.to_string())
                 };
                 if let Ok(ref albums) = result {
-                    crate::handlers::view_cache::cache_put(db3, &key, albums).await;
+                    crate::handlers::view_cache::cache_put(db3, &key, albums);
                 }
                 result
             },
@@ -533,7 +533,7 @@ impl AppModel {
                     client.get_artist_videos(&id4, Some(50)).await.map_err(|e| e.to_string())
                 };
                 if let Ok(ref videos) = result {
-                    crate::handlers::view_cache::cache_put(db4, &key, videos).await;
+                    crate::handlers::view_cache::cache_put(db4, &key, videos);
                 }
                 result
             },

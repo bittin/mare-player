@@ -1,8 +1,8 @@
 [package]
 name = "cosmic-applet-mare"
-version = "0.3.0"
+version = "0.3.2"
 edition = "2024"
-license = "MIT"
+license = "GPL-3.0-only"
 authors = ["Maré Player authors"]
 description = "Maré Player — a COSMIC desktop applet for TIDAL music streaming"
 repository = "https://github.com/glima/mare-player"
@@ -219,6 +219,14 @@ manual_assert = "deny"    # Prefer assert!(), assert_eq!(), etc. over manual if-
 panic = "deny"            # Disallow any usage of panic! macro — panics in production can crash the program
 unwrap_used = "deny"      # Avoid .unwrap() — it panics on None/Err; prefer match or ? for error propagation
 wildcard_imports = "deny" # Ban use foo::* — use explicit imports for clarity and to avoid namespace pollution
+
+[lints.rustdoc]
+# This is an application, not a published library: the lib target exists so the
+# integration tests can reach the modules, and most items are crate-internal.
+# Doc comments link to them freely, which is exactly what `just doc`
+# (--document-private-items) renders. Broken links are still caught by the
+# default `broken_intra_doc_links`.
+private_intra_doc_links = "allow"
 
 [dev-dependencies]
 libc = "0.2.180"

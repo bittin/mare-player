@@ -7,6 +7,11 @@ rootdir := ''
 prefix := '/usr'
 bloat-target := cargo-target-dir / 'release-bloat' / name
 
+# `install` normally runs under sudo, but the `tidal://` scheme association is
+# per-user config: run that one command back as the invoking user, or it lands
+# in root's home and the sign-in silently falls back to copying a URL.
+as-invoking-user := if env('SUDO_USER', '') != '' { 'sudo -u ' + env('SUDO_USER', '') } else { '' }
+
 # Installation paths
 
 base-dir := absolute_path(clean(rootdir / prefix))
@@ -81,23 +86,49 @@ check *args:
     echo "Checking formatting..."
     cargo fmt --all -- --check
     cargo clippy --all-features {{ args }} -- -W dead_code -D warnings
+    # Clippy above deliberately omits --all-targets: the production lint set
+    # (unwrap_used, indexing_slicing, …) is wrong for test code. That leaves
+    # integration tests uncompiled, so build them here — a signature change in
+    # the library can otherwise break `tests/` without this recipe noticing.
+    echo "Checking that tests compile..."
+    cargo test --no-run --all-features
     echo "Checking for unused imports..."
     if command -v cargo >/dev/null 2>&1 && cargo --list | grep -q machete; then
         cargo machete || exit 1
     else
         echo "cargo-machete not found, skipping unused import check (install with: cargo install cargo-machete)"
     fi
+    echo "Checking commit messages..."
+    if command -v cog >/dev/null 2>&1; then
+        # Conventional Commits, from the last tag forward — the history before
+        # the convention stays as it is. Types beyond the defaults are declared
+        # in cog.toml, and each one has a section in cliff.toml, so a subject
+        # that passes here cannot fall out of the release notes.
+        cog check --from-latest-tag || exit 1
+    else
+        echo "cocogitto not found, skipping commit-message check (install with: cargo install cocogitto)"
+    fi
+    echo "Checking dependency licences..."
+    if command -v cargo-deny >/dev/null 2>&1; then
+        # Allow list and exceptions live in deny.toml. The project is
+        # GPL-3.0-only, so this gates what a new dependency may drag in —
+        # the licence of a transitive crate is as binding as a direct one.
+        cargo deny check licenses --hide-inclusion-graph || exit 1
+    else
+        echo "cargo-deny not found, skipping licence check (install with: cargo install cargo-deny)"
+    fi
     echo "Running cargo audit for security vulnerabilities..."
     if command -v cargo-audit >/dev/null 2>&1; then
         # All ignored advisories are transitive deps from libcosmic/iced
         # that we cannot fix or upgrade ourselves.
         cargo audit \
-            --ignore RUSTSEC-2024-0436 `# paste (unmaintained) — via metal/accesskit_windows → wgpu/iced` \
-            --ignore RUSTSEC-2026-0186 `# memmap2 (unsound) — via cosmic-freedesktop-icons / cosmic-text → libcosmic` \
-            --ignore RUSTSEC-2026-0192 `# ttf-parser (unmaintained) — via ab_glyph/sctk-adwaita → winit → libcosmic` \
+            --ignore RUSTSEC-2024-0436 `# paste (unmaintained) — via metal (macOS-only) → wgpu-hal → wgpu → cryoglyph → iced_wgpu → libcosmic` \
+            --ignore RUSTSEC-2026-0186 `# memmap2 0.8 (unsound) — via xkbcommon 0.7 → iced_winit → libcosmic. Everything else here is already on the unaffected 0.9.11; clears when iced_winit moves to xkbcommon 0.9, which asks for memmap2 ^0.9` \
+            --ignore RUSTSEC-2026-0192 `# ttf-parser (unmaintained) — via fontdb → cosmic-text, owned_ttf_parser → ab_glyph → accesskit_winit, and rustybuzz → resvg; all three land in libcosmic` \
             --ignore RUSTSEC-2026-0206 `# rustybuzz (unmaintained) — via resvg/usvg → iced_tiny_skia → iced → libcosmic (SVG/text shaping)` \
             --ignore RUSTSEC-2026-0194 `# quick-xml DoS — via pprof→inferno 0.11→quick-xml 0.26; the SIGUSR1 flamegraph profiler is debug-builds-only and parses its own output, never untrusted input. pprof 0.15 (latest) pins inferno ^0.11, so the fixed quick-xml >=0.41 is out of reach until pprof moves to inferno 0.12` \
-            --ignore RUSTSEC-2026-0195 `# quick-xml DoS — same pprof→inferno→quick-xml 0.26 path. (The old wayland-scanner path is fixed: 0.31.11 moved to quick-xml 0.41.)`
+            --ignore RUSTSEC-2026-0195 `# quick-xml DoS — same pprof→inferno→quick-xml 0.26 path. (The old wayland-scanner path is fixed: 0.31.11 moved to quick-xml 0.41.)` \
+            --ignore RUSTSEC-2026-0253 `# lru (unsound) — via cryoglyph → iced → libcosmic, which requires lru ^0.16 while the fix landed in 0.18.2, so cargo cannot reach it. The unsoundness needs a key whose Drop panics under catch_unwind; cryoglyph's single cache is keyed by cosmic-text's CacheKey, a Copy struct of integers with no Drop at all. Clears when cryoglyph moves to lru 0.18`
     else
         echo "cargo-audit not found, skipping security audit (install with: cargo install cargo-audit)"
     fi
@@ -233,6 +264,15 @@ _install profile:
     install -Dm0644 resources/icon.svg {{ icon-symbolic-dst }}
     install -Dm0644 resources/icon.svg {{ icon-scalable-symbolic-dst }}
 
+    # Route `tidal://login/auth?code=…` to the player, so the TIDAL sign-in
+    # returns by itself instead of asking for the URL to be copied.
+    #
+    # The association is per-user while this recipe usually runs under sudo, so
+    # it has to be set as the invoking user — as root it lands in /root and the
+    # sign-in silently falls back to the paste box. Best-effort either way.
+    -update-desktop-database {{ base-dir }}/share/applications 2>/dev/null
+    -{{ as-invoking-user }} xdg-mime default io.github.cosmic-applet-mare.desktop x-scheme-handler/tidal
+
 # Internal: install standalone binary from the given profile plus shared resources.
 
 # Patches the applet .desktop and metainfo.xml files for standalone mode.
@@ -264,6 +304,10 @@ _install-standalone profile:
     install -Dm0644 resources/icon.svg {{ icon-dst }}
     install -Dm0644 resources/icon.svg {{ icon-symbolic-dst }}
     install -Dm0644 resources/icon.svg {{ icon-scalable-symbolic-dst }}
+
+    # Same `tidal://` handler registration as the applet install — see there.
+    -update-desktop-database {{ base-dir }}/share/applications 2>/dev/null
+    -{{ as-invoking-user }} xdg-mime default io.github.cosmic-applet-mare.desktop x-scheme-handler/tidal
 
 # Installs release build
 install: (_install 'release')

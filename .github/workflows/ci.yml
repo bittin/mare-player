@@ -20,6 +20,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # `cog check --from-latest-tag` needs history and tags
 
       - name: Install system dependencies
         run: |
@@ -43,8 +45,53 @@ jobs:
       - name: Install cargo-nextest
         uses: taiki-e/install-action@8e6bcdad38b75e3ed7b36872031a94f7c61006cc # cargo-nextest
 
-      - name: Build
-        run: cargo build --workspace --verbose
+      # `just check` skips whichever of these is missing, which is right for a
+      # laptop and wrong for CI: unused dependencies, security advisories and
+      # dependency licences were all being reported as "not found, skipping"
+      # rather than gating anything.
+      - name: Install cargo-machete
+        uses: taiki-e/install-action@cdcb1f492e0a327e6492f6748d9a637ac2ffd66f # cargo-machete
+
+      - name: Install cargo-audit
+        uses: taiki-e/install-action@55ed588c2f0e092949af25ad4c5873185e476b5c # cargo-audit
+
+      - name: Install cargo-deny
+        uses: taiki-e/install-action@e7755904d936cb033d6d742aa409597c6a104079 # cargo-deny
+
+      # cocogitto has no install-action entry, and cocogitto-action's
+      # `install-only` input exists only on its unreleased main — pinning the
+      # v4.1.0 release ran its `cog` step with no command and failed the job.
+      # So: the published binary, checksum-pinned, leaving `just check` as the
+      # single place the gate is defined.
+      - name: Install cocogitto
+        run: |
+          set -euo pipefail
+          ver=7.0.0
+          url="https://github.com/cocogitto/cocogitto/releases/download/${ver}/cocogitto-${ver}-x86_64-unknown-linux-musl.tar.gz"
+          curl -sSfL "$url" -o /tmp/cog.tgz
+          echo "e03938ff2c4c86d71c00c0f3284dbbe95c5ca76fe34a51f33e945c23010d59bb  /tmp/cog.tgz" | sha256sum -c -
+          tar xzf /tmp/cog.tgz -C /tmp
+          install -Dm755 /tmp/x86_64-unknown-linux-musl/cog "$HOME/.local/bin/cog"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Cache cargo registry and build artifacts
+        # Without this the job compiles all ~870 crates on every push. The key
+        # follows Cargo.lock, so dependencies are built once per lockfile
+        # change; `save-if` keeps pull requests restoring without each of them
+        # writing an entry, since the repo cache is capped at 10 GB and evicts
+        # by age.
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          shared-key: ci-build
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      # `just check` (clippy + `cargo test --no-run`) and `just test-matrix`
+      # both compile the root package, so the workspace build that used to sit
+      # here only added a fourth compile of it. What they never touch is the
+      # companion binary, which is a separate workspace member — so build that
+      # alone, and let the steps below cover the rest.
+      - name: Build mare-video-window
+        run: cargo build -p mare-video-window
 
       - name: Check/sanitize
         run: just check
@@ -90,6 +137,15 @@ jobs:
 
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@e5de28abeb52d916c5e5875d54b21a9e738b61ec # cargo-llvm-cov
+
+      - name: Cache cargo registry and build artifacts
+        # Kept separate from ci-build: llvm-cov compiles the tree with coverage
+        # instrumentation, so none of those artifacts are interchangeable with
+        # the ones the build job produces.
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          shared-key: ci-coverage
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Generate LCOV coverage report
         run: just coverage-summary && cargo llvm-cov report --lcov --output-path lcov.info --ignore-filename-regex '/tests?/|/target/'

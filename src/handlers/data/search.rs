@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: GPL-3.0-only
 
 //! Search message handlers for Maré Player.
 
@@ -25,7 +25,7 @@ impl AppModel {
                     client.search(&query, 20).await.map_err(|e| e.to_string())
                 };
                 if let Ok(ref results) = result {
-                    crate::handlers::view_cache::cache_put(db, &key, results).await;
+                    crate::handlers::view_cache::cache_put(db, &key, results);
                 }
                 result
             },

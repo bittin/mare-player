@@ -8,10 +8,12 @@ open-browser = 打开浏览器
 cancel = 取消
 verifying-auth = 正在验证身份...
 verifying-auth-wait = 请稍候，我们正在确认您的登录。
-oauth-open-url = 在浏览器中打开此链接：
-oauth-enter-code = 或输入代码：{$code}
-waiting-for-login = 等待登录...
-complete-login-in-browser = 请在浏览器中完成登录，然后返回此处。
+login-step-browser = 1. 打开 TIDAL 登录页面并登录：
+login-returns-here = 登录后会直接回到这里 —— 无需复制任何内容。
+login-step-paste = 2. 随后浏览器会跳转到一个无法加载的页面。复制该页面的地址并粘贴到这里：
+login-redirect-placeholder = https://tidal.com/android/login/auth?code=…
+login-finish = 完成登录
+login-retry = 该登录链接已被使用或已过期 —— 请重新打开浏览器并复制新的地址。
 preparing-login = 正在准备登录...
 
 # 导航
@@ -104,14 +106,10 @@ debug-unoptimized = （未优化）
 
 # 设置
 audio-quality = 音频质量
-quality-low = 低（96 kbps）
-quality-high = 高（320 kbps）
-quality-lossless = 无损（CD 音质）
-quality-hires = 高解析（母带音质）
-quality-description-low = 96 kbps AAC - 节省流量
-quality-description-high = 320 kbps AAC - 良好音质
-quality-description-lossless = FLAC 16位/44.1kHz - CD 音质
-quality-description-hires = FLAC 最高 24位/192kHz - 母带音质（需要 HiFi Plus）
+quality-description-low = 流量占用最少
+quality-description-high = 有损压缩，但流量占用低
+quality-description-lossless = CD 音质
+quality-description-hires = 需要包含高解析串流的订阅方案
 account = 账户
 about = 关于
 version = 版本

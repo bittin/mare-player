@@ -8,10 +8,12 @@ open-browser = ব্রাউজার খুলুন
 cancel = বাতিল
 verifying-auth = প্রমাণীকরণ যাচাই করা হচ্ছে...
 verifying-auth-wait = আপনার লগইন নিশ্চিত করার সময় অনুগ্রহ করে অপেক্ষা করুন।
-oauth-open-url = আপনার ব্রাউজারে এই URL খুলুন:
-oauth-enter-code = অথবা কোড লিখুন: {$code}
-waiting-for-login = লগইনের জন্য অপেক্ষা করা হচ্ছে...
-complete-login-in-browser = ব্রাউজারে লগইন সম্পন্ন করুন, তারপর এখানে ফিরে আসুন।
+login-step-browser = 1. TIDAL লগইন পৃষ্ঠা খুলুন এবং সাইন ইন করুন:
+login-returns-here = সাইন ইন করলেই সরাসরি এখানে ফিরে আসবেন — কিছু কপি করতে হবে না।
+login-step-paste = 2. এরপর ব্রাউজার এমন একটি পৃষ্ঠায় পৌঁছাবে যা লোড হবে না। সেটির ঠিকানা কপি করে এখানে পেস্ট করুন:
+login-redirect-placeholder = https://tidal.com/android/login/auth?code=…
+login-finish = সাইন ইন সম্পূর্ণ করুন
+login-retry = এই সাইন ইন লিঙ্কটি আগেই ব্যবহৃত হয়েছে বা মেয়াদ শেষ — আবার ব্রাউজার খুলে নতুন ঠিকানা কপি করুন।
 preparing-login = লগইন প্রস্তুত করা হচ্ছে...
 
 # নেভিগেশন
@@ -110,14 +112,10 @@ debug-unoptimized = (অনুকূলিত নয়)
 
 # সেটিংস
 audio-quality = অডিও গুণমান
-quality-low = নিম্ন (96 kbps)
-quality-high = উচ্চ (320 kbps)
-quality-lossless = লসলেস (সিডি গুণমান)
-quality-hires = হাই-রেজ (মাস্টার গুণমান)
-quality-description-low = 96 kbps AAC - কম ডেটা ব্যবহার করে
-quality-description-high = 320 kbps AAC - ভালো গুণমান
-quality-description-lossless = FLAC 16-বিট/44.1kHz - সিডি গুণমান
-quality-description-hires = FLAC 24-বিট/192kHz পর্যন্ত - মাস্টার গুণমান (HiFi Plus প্রয়োজন)
+quality-description-low = সবচেয়ে কম ডেটা ব্যবহার
+quality-description-high = লসি, তবে ডেটা কম লাগে
+quality-description-lossless = সিডি গুণমান
+quality-description-hires = হাই-রেজ স্ট্রিমিং সহ সাবস্ক্রিপশন প্রয়োজন
 account = অ্যাকাউন্ট
 about = সম্পর্কে
 version = সংস্করণ

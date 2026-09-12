@@ -8,10 +8,12 @@ open-browser = เปิดเบราว์เซอร์
 cancel = ยกเลิก
 verifying-auth = กำลังยืนยันตัวตน...
 verifying-auth-wait = กรุณารอสักครู่ขณะที่เรายืนยันการเข้าสู่ระบบของคุณ
-oauth-open-url = เปิด URL นี้ในเบราว์เซอร์ของคุณ:
-oauth-enter-code = หรือป้อนรหัส: {$code}
-waiting-for-login = กำลังรอการเข้าสู่ระบบ...
-complete-login-in-browser = ดำเนินการเข้าสู่ระบบในเบราว์เซอร์ จากนั้นกลับมาที่นี่
+login-step-browser = 1. เปิดหน้าเข้าสู่ระบบ TIDAL แล้วลงชื่อเข้าใช้:
+login-returns-here = เมื่อลงชื่อเข้าใช้แล้วจะกลับมาที่นี่ทันที — ไม่ต้องคัดลอกอะไร
+login-step-paste = 2. จากนั้นเบราว์เซอร์จะไปยังหน้าที่โหลดไม่ได้ ให้คัดลอกที่อยู่ของหน้านั้นมาวางที่นี่:
+login-redirect-placeholder = https://tidal.com/android/login/auth?code=…
+login-finish = เสร็จสิ้นการเข้าสู่ระบบ
+login-retry = ลิงก์เข้าสู่ระบบนี้ถูกใช้ไปแล้วหรือหมดอายุ — เปิดเบราว์เซอร์อีกครั้งแล้วคัดลอกที่อยู่ใหม่
 preparing-login = กำลังเตรียมการเข้าสู่ระบบ...
 
 # การนำทาง
@@ -104,14 +106,10 @@ debug-unoptimized = (ไม่ได้เพิ่มประสิทธิ�
 
 # การตั้งค่า
 audio-quality = คุณภาพเสียง
-quality-low = ต่ำ (96 kbps)
-quality-high = สูง (320 kbps)
-quality-lossless = ไม่สูญเสียคุณภาพ (คุณภาพ CD)
-quality-hires = ความละเอียดสูง (คุณภาพมาสเตอร์)
-quality-description-low = 96 kbps AAC - ใช้ข้อมูลน้อยลง
-quality-description-high = 320 kbps AAC - คุณภาพดี
-quality-description-lossless = FLAC 16 บิต/44.1kHz - คุณภาพ CD
-quality-description-hires = FLAC สูงสุด 24 บิต/192kHz - คุณภาพมาสเตอร์ (ต้องใช้ HiFi Plus)
+quality-description-low = ใช้ข้อมูลน้อยที่สุด
+quality-description-high = บีบอัดแบบสูญเสีย แต่ใช้ข้อมูลน้อย
+quality-description-lossless = คุณภาพ CD
+quality-description-hires = ต้องใช้แพ็กเกจที่รองรับการสตรีมความละเอียดสูง
 account = บัญชี
 about = เกี่ยวกับ
 version = เวอร์ชัน

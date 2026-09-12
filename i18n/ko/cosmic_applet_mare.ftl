@@ -8,10 +8,12 @@ open-browser = 브라우저 열기
 cancel = 취소
 verifying-auth = 인증 확인 중...
 verifying-auth-wait = 로그인을 확인하는 동안 잠시 기다려 주세요.
-oauth-open-url = 브라우저에서 이 URL을 여세요:
-oauth-enter-code = 또는 코드를 입력하세요: {$code}
-waiting-for-login = 로그인 대기 중...
-complete-login-in-browser = 브라우저에서 로그인을 완료한 후 여기로 돌아오세요.
+login-step-browser = 1. TIDAL 로그인 페이지를 열고 로그인하세요:
+login-returns-here = 로그인하면 바로 여기로 돌아옵니다 — 복사할 것이 없습니다.
+login-step-paste = 2. 그런 다음 브라우저가 열리지 않는 페이지로 이동합니다. 그 주소를 복사해 여기에 붙여넣으세요:
+login-redirect-placeholder = https://tidal.com/android/login/auth?code=…
+login-finish = 로그인 완료
+login-retry = 이 로그인 링크는 이미 사용되었거나 만료되었습니다 — 브라우저를 다시 열고 새 주소를 복사하세요.
 preparing-login = 로그인 준비 중...
 
 # Navigation
@@ -104,14 +106,10 @@ debug-unoptimized = (최적화되지 않음)
 
 # Settings
 audio-quality = 오디오 음질
-quality-low = 낮음 (96 kbps)
-quality-high = 높음 (320 kbps)
-quality-lossless = 무손실 (CD 음질)
-quality-hires = 고해상도 (마스터 음질)
-quality-description-low = 96 kbps AAC - 데이터 사용량 적음
-quality-description-high = 320 kbps AAC - 좋은 음질
-quality-description-lossless = FLAC 16비트/44.1kHz - CD 음질
-quality-description-hires = FLAC 최대 24비트/192kHz - 마스터 음질 (HiFi Plus 필요)
+quality-description-low = 데이터 사용량 최소
+quality-description-high = 손실 압축이지만 데이터 사용량 적음
+quality-description-lossless = CD 음질
+quality-description-hires = 고해상도 스트리밍이 포함된 구독 필요
 account = 계정
 about = 정보
 version = 버전

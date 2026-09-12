@@ -3,7 +3,7 @@
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/glima/mare-player/badge)](https://scorecard.dev/viewer/?uri=github.com/glima/mare-player)
 [![Codecov](https://codecov.io/gh/glima/mare-player/graph/badge.svg)](https://codecov.io/gh/glima/mare-player)
 [![GitHub Release](https://img.shields.io/github/release/glima/mare-player.svg)](https://github.com/glima/mare-player/releases/latest)
-![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)
+![License: GPL-3.0](https://img.shields.io/badge/license-GPL--3.0-blue.svg)
 ![GitHub Repo stars](https://img.shields.io/github/stars/glima/mare-player)
 
 A COSMIC™ desktop application for the TIDAL music streaming service.
@@ -67,8 +67,8 @@ via the `panel-applet` feature flag (enabled by default).
 - **Sharing** — Generate song.link URLs and copy to clipboard
 - **Dual Mode** — Builds as a COSMIC panel applet *or* a standalone
   windowed application (`--no-default-features`)
-- **Secure Authentication** — OAuth device-code flow with credentials
-  stored in the system keyring
+- **Secure Authentication** — Browser sign-in, with credentials stored in
+  the system keyring
 - **Persistent Sessions** — Automatic token refresh across reboots
 - **Disk Caching** — Artwork is cached on disk with a configurable size
   limit and LRU eviction; library data (playlists, albums, history,
@@ -134,11 +134,16 @@ just install-standalone
 ### First-time Setup
 
 1. Click the Maré Player icon in your panel (or launch the standalone app)
-2. Click **Sign in with TIDAL**
-3. A URL and code will be displayed
-4. Click **Open Browser** to open the TIDAL login page
-5. Enter the code and authorize the application
-6. Click **I've Signed In** to complete authentication
+2. Click **Sign in with TIDAL**, then **Open Browser**
+3. Sign in on TIDAL's page, with Google, Apple or your email. The browser
+   hands the result back to Maré and the sign-in completes on its own
+
+If the login screen asks you to paste a URL, another application owns the
+`tidal://` scheme. Take it back, as your user rather than root:
+
+```sh
+xdg-mime default io.github.cosmic-applet-mare.desktop x-scheme-handler/tidal
+```
 
 ### Browsing & Playback
 
@@ -236,7 +241,7 @@ change applies immediately, no restart.
 src/
 ├── playback/       # GStreamer engine (MediaPlayer): audio + video playbin, replay-gain volume, tee'd PCM tap, RGBA video appsink, gapless
 ├── audio/          # FFT spectrum analyzer (fed by the playback PCM tap)
-├── tidal/          # TIDAL API client, OAuth auth, player queue, MPRIS2 D-Bus interface
+├── tidal/          # TIDAL API client, PKCE auth, player queue, MPRIS2 D-Bus interface
 ├── handlers/       # Message handlers: auth, data loading, navigation, playback, misc (images, sharing, MPRIS, screenshots)
 ├── views/          # UI views
 │   ├── components/ # Reusable components: FadingClip widget, icons, constants, list helpers, row builders
@@ -263,9 +268,15 @@ src/
 - Built with [libcosmic](https://github.com/pop-os/libcosmic)
 - TIDAL API access via [tidlers](https://github.com/tomkoid/tidlers)
 
+## Contributing
+
+Bug reports, translations and patches are welcome — see
+[CONTRIBUTING.md](./CONTRIBUTING.md) for the setup, the checks CI gates on,
+and the commit-message and dependency-licence rules.
+
 ## License
 
-[MIT](LICENSE)
+[GPL-3.0-only](LICENSE)
 
 ## Disclaimer
 

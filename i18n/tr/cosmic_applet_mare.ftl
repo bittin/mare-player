@@ -8,10 +8,12 @@ open-browser = Tarayıcıyı Aç
 cancel = İptal
 verifying-auth = Kimlik doğrulanıyor...
 verifying-auth-wait = Girişinizi onaylarken lütfen bekleyin.
-oauth-open-url = Bu URL'yi tarayıcınızda açın:
-oauth-enter-code = Veya kodu girin: {$code}
-waiting-for-login = Giriş bekleniyor...
-complete-login-in-browser = Tarayıcıda girişi tamamlayın, ardından buraya dönün.
+login-step-browser = 1. TIDAL giriş sayfasını açın ve oturum açın:
+login-returns-here = Oturum açtığınızda doğrudan buraya dönersiniz — kopyalanacak bir şey yok.
+login-step-paste = 2. Tarayıcı ardından yüklenemeyen bir sayfaya gider. O sayfanın adresini kopyalayıp buraya yapıştırın:
+login-redirect-placeholder = https://tidal.com/android/login/auth?code=…
+login-finish = Girişi Tamamla
+login-retry = Bu oturum açma bağlantısı zaten kullanıldı veya süresi doldu — tarayıcıyı yeniden açıp yeni adresi kopyalayın.
 preparing-login = Giriş hazırlanıyor...
 
 # Gezinme
@@ -104,14 +106,10 @@ debug-unoptimized = (optimize edilmemiş)
 
 # Ayarlar
 audio-quality = Ses Kalitesi
-quality-low = Düşük (96 kbps)
-quality-high = Yüksek (320 kbps)
-quality-lossless = Kayıpsız (CD Kalitesi)
-quality-hires = Yüksek Çözünürlük (Master Kalitesi)
-quality-description-low = 96 kbps AAC - Daha az veri kullanır
-quality-description-high = 320 kbps AAC - İyi kalite
-quality-description-lossless = FLAC 16-bit/44,1kHz - CD kalitesi
-quality-description-hires = FLAC 24-bit/192kHz'e kadar - Master kalitesi (HiFi Plus gerektirir)
+quality-description-low = En az veri kullanımı
+quality-description-high = Kayıplı ama az veri kullanır
+quality-description-lossless = CD kalitesi
+quality-description-hires = Yüksek çözünürlüklü yayın içeren abonelik gerektirir
 account = Hesap
 about = Hakkında
 version = Sürüm

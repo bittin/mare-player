@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: GPL-3.0-only
 
 //! View-state cache helpers (stale-while-revalidate).
 //!
@@ -20,6 +20,7 @@
 use cosmic::prelude::*;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
+use tokio::task::JoinHandle;
 
 use crate::cache::Db;
 use crate::messages::Message;
@@ -33,23 +34,27 @@ const MAX_VIEW_ENTRY_BYTES: i64 = 1024 * 1024;
 /// Total byte budget across all cached view payloads (LRU-evicted).
 const VIEW_CACHE_BUDGET_BYTES: i64 = 16 * 1024 * 1024;
 
-/// Serialize `payload` and write it into the view cache under `key`.
+/// Serialize `payload` and write it into the view cache under `key`, in the
+/// background.
 ///
 /// Best-effort: a missing database, a serialization failure, or an oversized
-/// payload are all silently skipped. Intended to be `.await`ed at the tail of a
-/// `load_*` task's async block, just before the result is handed to the UI.
-pub(crate) async fn cache_put<T: Serialize>(db: Option<Db>, key: &str, payload: &T) {
-    let Some(db) = db else {
-        return;
-    };
-    let Ok(bytes) = serde_json::to_vec(payload) else {
-        return;
-    };
+/// payload are all silently skipped. Called at the tail of a `load_*` task's
+/// async block, just before the result is handed to the UI — so the write is
+/// **detached**: the paint that the result unblocks must not queue behind
+/// whatever else is using the single cache connection (typically a screen's
+/// worth of artwork). Returns the spawned write's handle, which production
+/// code drops and the tests below await.
+pub(crate) fn cache_put<T: Serialize>(db: Option<Db>, key: &str, payload: &T) -> Option<JoinHandle<()>> {
+    let db = db?;
+    let bytes = serde_json::to_vec(payload).ok()?;
     if bytes.len() as i64 > MAX_VIEW_ENTRY_BYTES {
         tracing::debug!("view cache: skipping oversized payload for {key} ({} bytes)", bytes.len());
-        return;
+        return None;
     }
-    db.put_view(key, &bytes, None, VIEW_CACHE_BUDGET_BYTES).await;
+    let key = key.to_string();
+    Some(tokio::spawn(async move {
+        db.put_view(&key, &bytes, None, VIEW_CACHE_BUDGET_BYTES).await;
+    }))
 }
 
 impl AppModel {
@@ -90,7 +95,7 @@ mod tests {
     async fn cache_put_round_trips_via_db() {
         let db = crate::cache::Db::open(Path::new(":memory:")).await.expect("open db");
         let payload = vec!["alpha".to_string(), "beta".to_string()];
-        cache_put(Some(db.clone()), "library:playlists", &payload).await;
+        cache_put(Some(db.clone()), "library:playlists", &payload).expect("write spawned").await.expect("write finished");
 
         let bytes = db.get_view("library:playlists").await.expect("cache hit");
         let back: Vec<String> = serde_json::from_slice(&bytes).expect("deserialize");
@@ -100,7 +105,7 @@ mod tests {
     #[tokio::test]
     async fn cache_put_without_db_is_noop() {
         // No database: must be a silent no-op, never a panic.
-        cache_put::<Vec<u8>>(None, "k", &Vec::new()).await;
+        assert!(cache_put::<Vec<u8>>(None, "k", &Vec::new()).is_none());
     }
 
     #[tokio::test]
@@ -109,7 +114,7 @@ mod tests {
         // One byte over the per-entry cap serializes larger than the cap and is
         // skipped, so the read misses.
         let huge = vec![0u8; (MAX_VIEW_ENTRY_BYTES as usize) + 1];
-        cache_put(Some(db.clone()), "big", &huge).await;
+        assert!(cache_put(Some(db.clone()), "big", &huge).is_none());
         assert!(db.get_view("big").await.is_none());
     }
 }

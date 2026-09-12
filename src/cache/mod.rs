@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: GPL-3.0-only
 
 //! Turso-backed cache database.
 //!
@@ -23,6 +23,13 @@
 //! ops per navigation / image), so serialising keeps the model simple and
 //! avoids relying on the young engine's concurrent-writer behaviour.
 //!
+//! The price of that choice is that every operation queues behind every other
+//! one: a screen of album art landing at once is enough to delay the view-cache
+//! read that gates the next navigation's paint. So each operation here stays
+//! O(1)-ish — no full-table scans on the write path — and callers whose result
+//! drives a paint hand their cache writes to a detached task rather than
+//! awaiting them.
+//!
 //! ## Disposability
 //!
 //! Everything here is a cache: it can always be rebuilt from TIDAL. So instead
@@ -38,6 +45,7 @@
 
 use std::path::Path;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use tokio::sync::Mutex;
@@ -46,10 +54,66 @@ use turso::Builder;
 /// Bump to invalidate (drop + recreate) all cached tables.
 const SCHEMA_VERSION: i64 = 1;
 
+/// Sentinel for "this table's live byte total hasn't been measured yet".
+const UNKNOWN_TOTAL: i64 = -1;
+
+/// A cache table kept under a byte budget by evicting its
+/// least-recently-accessed rows. (`play_history` has no budget: it is the one
+/// non-disposable table.)
+#[derive(Clone, Copy)]
+enum Evicted {
+    Image,
+    ViewCache,
+}
+
+impl Evicted {
+    /// SQL table name.
+    fn table(self) -> &'static str {
+        match self {
+            Self::Image => "image",
+            Self::ViewCache => "view_cache",
+        }
+    }
+
+    /// Primary-key column, used to size the row a write replaces.
+    fn key_column(self) -> &'static str {
+        match self {
+            Self::Image => "url",
+            Self::ViewCache => "key",
+        }
+    }
+}
+
+/// Live `SUM(bytes)` of each evicted table, maintained in memory so the byte
+/// budget can be enforced without scanning the table on every write.
+///
+/// Both cells start at [`UNKNOWN_TOTAL`] and are measured once, on the first
+/// write of the session. They are only ever touched with the connection mutex
+/// held, which is what orders the updates — the atomics exist so that the
+/// shared handle stays `Sync` without a second lock.
+struct Totals {
+    image: AtomicI64,
+    view_cache: AtomicI64,
+}
+
+impl Totals {
+    fn new() -> Self {
+        Self { image: AtomicI64::new(UNKNOWN_TOTAL), view_cache: AtomicI64::new(UNKNOWN_TOTAL) }
+    }
+
+    fn cell(&self, table: Evicted) -> &AtomicI64 {
+        match table {
+            Evicted::Image => &self.image,
+            Evicted::ViewCache => &self.view_cache,
+        }
+    }
+}
+
 /// Handle to the cache database. Cheap to clone (shared connection).
 #[derive(Clone)]
 pub struct Db {
     conn: Arc<Mutex<turso::Connection>>,
+    totals: Arc<Totals>,
 }
 
 impl std::fmt::Debug for Db {
@@ -74,7 +138,7 @@ impl Db {
         let path_str = path.to_str().unwrap_or(":memory:");
         let db = Builder::new_local(path_str).build().await?;
         let conn = db.connect()?;
-        let me = Self { conn: Arc::new(Mutex::new(conn)) };
+        let me = Self { conn: Arc::new(Mutex::new(conn)), totals: Arc::new(Totals::new()) };
         me.init_schema().await?;
         Ok(me)
     }
@@ -120,6 +184,10 @@ impl Db {
             (),
         )
         .await?;
+        // Eviction picks the least-recently-accessed row; without these it is a
+        // full table scan plus a sort of every cached blob, on every write.
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_view_cache_accessed_at ON view_cache (accessed_at)", ()).await?;
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_image_accessed_at ON image (accessed_at)", ()).await?;
         // Non-disposable: one row per played track, deduped by `track_id`
         // (move-to-front on replay), ordered by `played_at` (epoch millis).
         // `entry` is the JSON-serialised `HistoryEntry`. Created unconditionally
@@ -161,6 +229,9 @@ impl Db {
         let now = now_secs();
         let conn = self.conn.lock().await;
         let etag = etag.map(|s| s.to_string());
+        // Sized before the write: the row this replaces (if any) stops
+        // counting toward the table's live total.
+        let replaced = Self::row_bytes(&conn, Evicted::ViewCache, key).await;
         let res = conn
             .execute(
                 "INSERT INTO view_cache (key, payload, etag, bytes, updated_at, accessed_at)
@@ -178,7 +249,7 @@ impl Db {
             tracing::warn!("cache put_view failed: {e}");
             return;
         }
-        Self::enforce_budget(&conn, "view_cache", budget_bytes).await;
+        self.enforce_budget(&conn, Evicted::ViewCache, payload.len() as i64 - replaced, budget_bytes).await;
     }
 
     // ── image cache ─────────────────────────────────────────────────────
@@ -197,6 +268,7 @@ impl Db {
     pub async fn put_image(&self, url: &str, data: &[u8], budget_bytes: i64) {
         let now = now_secs();
         let conn = self.conn.lock().await;
+        let replaced = Self::row_bytes(&conn, Evicted::Image, url).await;
         let res = conn
             .execute(
                 "INSERT INTO image (url, data, bytes, accessed_at)
@@ -212,7 +284,7 @@ impl Db {
             tracing::warn!("cache put_image failed: {e}");
             return;
         }
-        Self::enforce_budget(&conn, "image", budget_bytes).await;
+        self.enforce_budget(&conn, Evicted::Image, data.len() as i64 - replaced, budget_bytes).await;
     }
 
     // ── play history ────────────────────────────────────────
@@ -268,39 +340,77 @@ impl Db {
 
     // ── eviction ────────────────────────────────────────────────────────
 
-    /// Evict the oldest rows (by `accessed_at`) from `table` until the total
-    /// `bytes` fits under `budget_bytes`. Window-function-free so it works on
-    /// the current engine: drop the single oldest row, repeat.
-    async fn enforce_budget(conn: &turso::Connection, table: &str, budget_bytes: i64) {
+    /// Fold a write of `delta` bytes into `table`'s live total, then evict the
+    /// oldest rows (by `accessed_at`) until it fits `budget_bytes`.
+    ///
+    /// The total is tracked in memory rather than re-derived per write: a
+    /// `SUM(bytes)` over a full image table costs ~50 ms, and paying that on
+    /// every artwork write, with the single connection mutex held, holds up
+    /// every other cache user for seconds — including the view-cache read and
+    /// write that gate a navigation's paint. It is measured once per session
+    /// and maintained from there, so the common under-budget write does no
+    /// reads at all.
+    ///
+    /// Called with the connection mutex held; that is what serialises the
+    /// read-modify-write of the total.
+    async fn enforce_budget(&self, conn: &turso::Connection, table: Evicted, delta: i64, budget_bytes: i64) {
         if budget_bytes <= 0 {
             return;
         }
-        loop {
-            let total: i64 = match conn.query(&format!("SELECT COALESCE(SUM(bytes), 0) FROM {table}"), ()).await {
-                Ok(mut rows) => match rows.next().await {
-                    Ok(Some(row)) => row.get_value(0).ok().and_then(|v| v.as_integer().copied()).unwrap_or(0),
-                    _ => 0,
-                },
-                Err(_) => return,
+        let cell = self.totals.cell(table);
+        let mut total = match cell.load(Ordering::Relaxed) {
+            // First write of the session: measure. The scan runs after the
+            // insert, so it already accounts for `delta`.
+            UNKNOWN_TOTAL => match Self::sum_bytes(conn, table).await {
+                Some(total) => total,
+                None => return,
+            },
+            known => known + delta,
+        };
+
+        // Window-function-free so it works on the current engine: drop the
+        // single oldest row, repeat. Each pass is an index lookup and a delete.
+        while total > budget_bytes {
+            let Some((rowid, bytes)) = Self::oldest_row(conn, table).await else {
+                break;
             };
-            if total <= budget_bytes {
-                return;
+            let sql = format!("DELETE FROM {} WHERE rowid = ?1", table.table());
+            if conn.execute(&sql, [rowid]).await.unwrap_or(0) == 0 {
+                break;
             }
-            let deleted = conn
-                .execute(
-                    &format!(
-                        "DELETE FROM {table} WHERE rowid = (
-                            SELECT rowid FROM {table} ORDER BY accessed_at ASC LIMIT 1
-                        )"
-                    ),
-                    (),
-                )
-                .await
-                .unwrap_or(0);
-            if deleted == 0 {
-                return;
-            }
+            total -= bytes;
         }
+
+        cell.store(total, Ordering::Relaxed);
+    }
+
+    /// Total live bytes in `table`. A full scan — see [`Db::enforce_budget`].
+    async fn sum_bytes(conn: &turso::Connection, table: Evicted) -> Option<i64> {
+        let sql = format!("SELECT COALESCE(SUM(bytes), 0) FROM {}", table.table());
+        let mut rows = conn.query(&sql, ()).await.ok()?;
+        let row = rows.next().await.ok()??;
+        row.get_value(0).ok()?.as_integer().copied()
+    }
+
+    /// `(rowid, bytes)` of the least-recently-accessed row, found through the
+    /// `accessed_at` index.
+    async fn oldest_row(conn: &turso::Connection, table: Evicted) -> Option<(i64, i64)> {
+        let sql = format!("SELECT rowid, bytes FROM {} ORDER BY accessed_at ASC LIMIT 1", table.table());
+        let mut rows = conn.query(&sql, ()).await.ok()?;
+        let row = rows.next().await.ok()??;
+        let rowid = row.get_value(0).ok()?.as_integer().copied()?;
+        let bytes = row.get_value(1).ok()?.as_integer().copied()?;
+        Some((rowid, bytes))
+    }
+
+    /// Size of the row currently stored under `key`, or 0 if there is none. A
+    /// primary-key lookup, used to keep the live total exact across upserts.
+    async fn row_bytes(conn: &turso::Connection, table: Evicted, key: &str) -> i64 {
+        let sql = format!("SELECT bytes FROM {} WHERE {} = ?1", table.table(), table.key_column());
+        let Ok(mut rows) = conn.query(&sql, [key]).await else {
+            return 0;
+        };
+        rows.next().await.ok().flatten().and_then(|row| row.get_value(0).ok()?.as_integer().copied()).unwrap_or(0)
     }
 }
 
@@ -335,6 +445,37 @@ mod tests {
         let db = mem_db().await;
         db.put_image("https://x/y.jpg", &[9u8; 64], 1024 * 1024).await;
         assert_eq!(db.get_image("https://x/y.jpg").await.map(|d| d.len()), Some(64));
+    }
+
+    #[tokio::test]
+    async fn image_budget_evicts_until_it_fits() {
+        let db = mem_db().await;
+        let urls = ["https://x/1.jpg", "https://x/2.jpg", "https://x/3.jpg"];
+        // Budget for two of the three 100-byte images.
+        for url in urls {
+            db.put_image(url, &[0u8; 100], 250).await;
+        }
+        let mut kept = 0;
+        for url in urls {
+            kept += usize::from(db.get_image(url).await.is_some());
+        }
+        // Which rows survive depends on `accessed_at`, which has one-second
+        // resolution, so only the count is pinned down here.
+        assert_eq!(kept, 2);
+    }
+
+    #[tokio::test]
+    async fn rewriting_an_image_does_not_inflate_the_budget() {
+        let db = mem_db().await;
+        // The live total tracks replacement, not accumulation: ten writes of
+        // the same 100-byte key stay 100 bytes, so a second image still fits
+        // under a 250-byte budget.
+        for _ in 0..10 {
+            db.put_image("https://x/1.jpg", &[0u8; 100], 250).await;
+        }
+        db.put_image("https://x/2.jpg", &[0u8; 100], 250).await;
+        assert!(db.get_image("https://x/1.jpg").await.is_some());
+        assert!(db.get_image("https://x/2.jpg").await.is_some());
     }
 
     #[tokio::test]

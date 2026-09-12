@@ -8,10 +8,12 @@ open-browser = ブラウザを開く
 cancel = キャンセル
 verifying-auth = 認証を確認中...
 verifying-auth-wait = ログインを確認しています。しばらくお待ちください。
-oauth-open-url = ブラウザでこのURLを開いてください：
-oauth-enter-code = またはコードを入力: {$code}
-waiting-for-login = ログイン待機中...
-complete-login-in-browser = ブラウザでログインを完了してから、ここに戻ってください。
+login-step-browser = 1. TIDALのログインページを開いてサインインします:
+login-returns-here = サインインすると自動的にここに戻ります。コピーは不要です。
+login-step-paste = 2. その後ブラウザは読み込めないページに移動します。そのアドレスをコピーしてここに貼り付けてください:
+login-redirect-placeholder = https://tidal.com/android/login/auth?code=…
+login-finish = サインインを完了
+login-retry = このサインインリンクは使用済みか期限切れです。もう一度ブラウザを開いて新しいアドレスをコピーしてください。
 preparing-login = ログインを準備中...
 
 # ナビゲーション
@@ -104,14 +106,10 @@ debug-unoptimized = （未最適化）
 
 # 設定
 audio-quality = オーディオ品質
-quality-low = 低 (96 kbps)
-quality-high = 高 (320 kbps)
-quality-lossless = ロスレス (CD品質)
-quality-hires = ハイレゾ (マスター品質)
-quality-description-low = 96 kbps AAC - データ使用量が少ない
-quality-description-high = 320 kbps AAC - 高音質
-quality-description-lossless = FLAC 16ビット/44.1kHz - CD品質
-quality-description-hires = FLAC 最大24ビット/192kHz - マスター品質（HiFi Plusが必要）
+quality-description-low = データ使用量が最小
+quality-description-high = 非可逆圧縮だがデータ使用量は控えめ
+quality-description-lossless = CD品質
+quality-description-hires = ハイレゾ配信に対応したプランが必要
 account = アカウント
 about = このアプリについて
 version = バージョン

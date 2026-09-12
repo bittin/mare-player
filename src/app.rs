@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: GPL-3.0-only
 
 //! COSMIC application implementation for Maré Player.
 //!
@@ -109,7 +109,9 @@ impl cosmic::Application for AppModel {
             favorite_tracks_filter_visible: false,
             favorite_tracks_filter_query: String::new(),
             view_state: ViewState::Loading,
-            device_code_info: None,
+            login_request: None,
+            login_redirect_url: String::new(),
+            login_uri_rx: None,
             search_query: String::new(),
             search_results: None,
             user_playlists: Vec::new(),
@@ -138,6 +140,7 @@ impl cosmic::Application for AppModel {
             selected_track_lyrics: None,
             current_lyric_index: None,
             now_playing_lyrics: None,
+            now_playing_quality: None,
             selected_credits_track: None,
             selected_track_credits: None,
             selected_detail_track: None,
@@ -190,6 +193,7 @@ impl cosmic::Application for AppModel {
             loading_progress: 0.0,
             pending_seek: None,
             seek_debounce_version: 0,
+            playback_resolve_version: 0,
             volume_level: saved_volume,
             show_volume_bar: false,
             volume_bar_shown_at: None,
@@ -225,6 +229,13 @@ impl cosmic::Application for AppModel {
         #[cfg(feature = "panel-applet")]
         let title_task: Task<cosmic::Action<Self::Message>> = Task::none();
 
+        // Start the sign-in callback service, so a browser that opens
+        // `tidal://login/auth?code=…` can hand the code to us directly.
+        let login_uri_task = Task::perform(
+            async { crate::tidal::login_uri::start_login_uri_service().await.map(|rx| Arc::new(Mutex::new(rx))) },
+            |result| cosmic::Action::App(Message::LoginUriServiceStarted(result)),
+        );
+
         // Start MPRIS service
         let mpris_task = Task::perform(
             async { crate::tidal::mpris::start_mpris_service().await.map(|(handle, rx)| (handle, Arc::new(Mutex::new(rx)))) },
@@ -259,7 +270,7 @@ impl cosmic::Application for AppModel {
             |result| cosmic::Action::App(Message::CacheDbReady(result)),
         );
 
-        (app, Task::batch([mpris_task, title_task, cache_db_task]))
+        (app, Task::batch([mpris_task, login_uri_task, title_task, cache_db_task]))
     }
 
     /// Track the current window size so views can scale text limits, etc.
@@ -401,6 +412,32 @@ impl cosmic::Application for AppModel {
                     let mut rx = rx.lock().await;
                     while let Some(cmd) = rx.recv().await {
                         if channel.send(Message::MprisCommand(cmd)).await.is_err() {
+                            break;
+                        }
+                    }
+                    futures_util::future::pending().await
+                })
+            }));
+        }
+
+        // Sign-in callbacks handed over by a browser through `tidal://`.
+        if let Some(rx) = &self.login_uri_rx {
+            /// Newtype wrapper around the callback-URI receiver, hashed by
+            /// [`Arc`] pointer address so it can key a `run_with` subscription.
+            struct LoginUriRx(Arc<Mutex<tokio::sync::mpsc::UnboundedReceiver<String>>>);
+
+            impl std::hash::Hash for LoginUriRx {
+                fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+                    Arc::as_ptr(&self.0).hash(state);
+                }
+            }
+
+            subs.push(Subscription::run_with(LoginUriRx(rx.clone()), |data: &LoginUriRx| {
+                let rx = data.0.clone();
+                cosmic::iced::stream::channel(4, async move |mut channel| {
+                    let mut rx = rx.lock().await;
+                    while let Some(uri) = rx.recv().await {
+                        if channel.send(Message::LoginCallbackUri(uri)).await.is_err() {
                             break;
                         }
                     }
@@ -623,12 +660,19 @@ impl cosmic::Application for AppModel {
 
             // Auth handlers
             Message::StartLogin => self.handle_start_login(),
-            Message::LoginOAuthReceived(result) => self.handle_login_oauth_received(result),
-            Message::OpenOAuthUrl => {
-                self.handle_open_oauth_url();
+            Message::LoginUrlReceived(result) => self.handle_login_url_received(result),
+            Message::OpenLoginUrl => {
+                self.handle_open_login_url();
                 Task::none()
             }
-            Message::OAuthComplete(result) => self.handle_oauth_complete(result),
+            Message::LoginRedirectUrlChanged(url) => {
+                self.login_redirect_url = url;
+                Task::none()
+            }
+            Message::SubmitLoginRedirectUrl => self.handle_submit_login_redirect_url(),
+            Message::LoginUriServiceStarted(result) => self.handle_login_uri_service_started(result),
+            Message::LoginCallbackUri(uri) => self.handle_login_callback_uri(uri),
+            Message::LoginComplete(result) => self.handle_login_complete(result),
             Message::SessionRestored(result) => self.handle_session_restored(result),
             Message::Logout => self.handle_logout(),
 
@@ -768,6 +812,7 @@ impl cosmic::Application for AppModel {
                 Task::none()
             }
             Message::PreloadNextTrack => self.handle_preload_next_track(),
+            Message::ResolvePlaybackDebounced(v) => self.handle_resolve_playback_debounced(v),
             Message::PreloadUrlReceived(result) => self.handle_preload_url_received(result),
             Message::GaplessTransition => self.handle_gapless_transition(),
             Message::SeekTo(percent) => self.handle_seek_to(percent),

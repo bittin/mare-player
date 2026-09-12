@@ -8,10 +8,12 @@ open-browser = Mở trình duyệt
 cancel = Hủy
 verifying-auth = Đang xác minh xác thực...
 verifying-auth-wait = Vui lòng chờ trong khi chúng tôi xác nhận đăng nhập của bạn.
-oauth-open-url = Mở URL này trong trình duyệt của bạn:
-oauth-enter-code = Hoặc nhập mã: {$code}
-waiting-for-login = Đang chờ đăng nhập...
-complete-login-in-browser = Hoàn tất đăng nhập trong trình duyệt, sau đó quay lại đây.
+login-step-browser = 1. Mở trang đăng nhập TIDAL và đăng nhập:
+login-returns-here = Đăng nhập xong bạn sẽ quay lại đây ngay — không cần sao chép gì.
+login-step-paste = 2. Sau đó trình duyệt sẽ tới một trang không tải được. Sao chép địa chỉ của trang đó và dán vào đây:
+login-redirect-placeholder = https://tidal.com/android/login/auth?code=…
+login-finish = Hoàn tất đăng nhập
+login-retry = Liên kết đăng nhập đó đã dùng rồi hoặc đã hết hạn — mở lại trình duyệt và sao chép địa chỉ mới.
 preparing-login = Đang chuẩn bị đăng nhập...
 
 # Điều hướng
@@ -104,14 +106,10 @@ debug-unoptimized = (chưa tối ưu)
 
 # Cài đặt
 audio-quality = Chất lượng âm thanh
-quality-low = Thấp (96 kbps)
-quality-high = Cao (320 kbps)
-quality-lossless = Không mất dữ liệu (Chất lượng CD)
-quality-hires = Hi-Res (Chất lượng Master)
-quality-description-low = 96 kbps AAC - Tiết kiệm dung lượng
-quality-description-high = 320 kbps AAC - Chất lượng tốt
-quality-description-lossless = FLAC 16-bit/44.1kHz - Chất lượng CD
-quality-description-hires = FLAC lên đến 24-bit/192kHz - Chất lượng Master (yêu cầu HiFi Plus)
+quality-description-low = Dùng ít dữ liệu nhất
+quality-description-high = Nén mất dữ liệu, nhưng tốn ít dung lượng
+quality-description-lossless = Chất lượng CD
+quality-description-hires = Cần gói đăng ký có phát trực tuyến hi-res
 account = Tài khoản
 about = Giới thiệu
 version = Phiên bản

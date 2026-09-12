@@ -8,10 +8,12 @@ open-browser = Ouvrir le navigateur
 cancel = Annuler
 verifying-auth = Vérification de l'authentification…
 verifying-auth-wait = Veuillez patienter pendant que nous confirmons votre connexion.
-oauth-open-url = Ouvrez cette URL dans votre navigateur :
-oauth-enter-code = Ou entrez le code : {$code}
-waiting-for-login = En attente de connexion…
-complete-login-in-browser = Terminez la connexion dans le navigateur, puis revenez ici.
+login-step-browser = 1. Ouvrez la page de connexion TIDAL et connectez-vous :
+login-returns-here = La connexion vous ramènera directement ici — rien à copier.
+login-step-paste = 2. Le navigateur aboutit ensuite à une page qui ne se charge pas. Copiez son adresse et collez-la ici :
+login-redirect-placeholder = https://tidal.com/android/login/auth?code=…
+login-finish = Terminer la connexion
+login-retry = Ce lien de connexion a déjà servi ou a expiré — rouvrez le navigateur et copiez la nouvelle adresse.
 preparing-login = Préparation de la connexion…
 
 # Navigation
@@ -110,14 +112,10 @@ debug-unoptimized = (non optimisé)
 
 # Paramètres
 audio-quality = Qualité audio
-quality-low = Basse (96 kbps)
-quality-high = Haute (320 kbps)
-quality-lossless = Sans perte (qualité CD)
-quality-hires = Hi-Res (qualité Master)
-quality-description-low = AAC 96 kbps – Consomme moins de données
-quality-description-high = AAC 320 kbps – Bonne qualité
-quality-description-lossless = FLAC 16 bits/44,1 kHz – Qualité CD
-quality-description-hires = FLAC jusqu'à 24 bits/192 kHz – Qualité Master (nécessite HiFi Plus)
+quality-description-low = Consommation de données minimale
+quality-description-high = Avec perte, mais peu de données
+quality-description-lossless = Qualité CD
+quality-description-hires = Nécessite un abonnement incluant le streaming haute résolution
 account = Compte
 about = À propos
 version = Version

@@ -8,10 +8,12 @@ open-browser = Öppna webbläsare
 cancel = Avbryt
 verifying-auth = Verifierar autentisering...
 verifying-auth-wait = Vänligen vänta medan vi bekräftar din inloggning.
-oauth-open-url = Öppna denna i din webbläsare:
-oauth-enter-code = Eller ange kod: {$code}
-waiting-for-login = Väntar på inloggning...
-complete-login-in-browser = Slutför inloggningen i webbläsaren och återvänd sedan hit.
+login-step-browser = 1. Öppna TIDALs inloggningssida och logga in:
+login-returns-here = Inloggningen tar dig rakt tillbaka hit — inget att kopiera.
+login-step-paste = 2. Webbläsaren hamnar sedan på en sida som inte kan laddas. Kopiera dess adress och klistra in den här:
+login-redirect-placeholder = https://tidal.com/android/login/auth?code=…
+login-finish = Slutför inloggning
+login-retry = Den inloggningslänken är redan använd eller har gått ut — öppna webbläsaren igen och kopiera den nya adressen.
 preparing-login = Förbereder inloggning...
 
 # Navigering
@@ -110,14 +112,10 @@ debug-unoptimized = (ooptimerad)
 
 # Inställningar
 audio-quality = Ljudkvalitet
-quality-low = Låg (96 kbps)
-quality-high = Hög (320 kbps)
-quality-lossless = Lossless (CD-kvalitet)
-quality-hires = Hi-Res (Master-kvalitet)
-quality-description-low = 96 kbps AAC - Använder mindre data
-quality-description-high = 320 kbps AAC - Bra kvalitet
-quality-description-lossless = FLAC 16-bit/44.1kHz - CD kvalitet
-quality-description-hires = FLAC up to 24-bit/192kHz - Master kvalitet (kräver HiFi Plus)
+quality-description-low = Minst dataanvändning
+quality-description-high = Komprimerad, men snål med data
+quality-description-lossless = CD-kvalitet
+quality-description-hires = Kräver ett abonnemang med hi-res-strömning
 account = Konto
 about = Om
 version = Version

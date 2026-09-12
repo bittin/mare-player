@@ -8,10 +8,12 @@ open-browser = ब्राउज़र खोलें
 cancel = रद्द करें
 verifying-auth = प्रमाणीकरण सत्यापित हो रहा है...
 verifying-auth-wait = कृपया प्रतीक्षा करें, हम आपके लॉगिन की पुष्टि कर रहे हैं।
-oauth-open-url = यह URL अपने ब्राउज़र में खोलें:
-oauth-enter-code = या कोड दर्ज करें: {$code}
-waiting-for-login = लॉगिन की प्रतीक्षा हो रही है...
-complete-login-in-browser = ब्राउज़र में लॉगिन पूरा करें, फिर यहाँ लौटें।
+login-step-browser = 1. TIDAL लॉगिन पेज खोलें और साइन इन करें:
+login-returns-here = साइन इन करते ही आप सीधे यहाँ लौट आएँगे — कुछ भी कॉपी नहीं करना है।
+login-step-paste = 2. इसके बाद ब्राउज़र एक ऐसे पेज पर पहुँचता है जो लोड नहीं होता। उसका पता कॉपी करके यहाँ पेस्ट करें:
+login-redirect-placeholder = https://tidal.com/android/login/auth?code=…
+login-finish = साइन इन पूरा करें
+login-retry = यह साइन-इन लिंक पहले ही इस्तेमाल हो चुका है या समाप्त हो गया — ब्राउज़र फिर से खोलें और नया पता कॉपी करें।
 preparing-login = लॉगिन तैयार हो रहा है...
 
 # Navigation
@@ -110,14 +112,10 @@ debug-unoptimized = (अनऑप्टिमाइज़्ड)
 
 # Settings
 audio-quality = ऑडियो गुणवत्ता
-quality-low = निम्न (96 kbps)
-quality-high = उच्च (320 kbps)
-quality-lossless = लॉसलेस (CD गुणवत्ता)
-quality-hires = हाई-रेज़ (मास्टर गुणवत्ता)
-quality-description-low = 96 kbps AAC - कम डेटा उपयोग
-quality-description-high = 320 kbps AAC - अच्छी गुणवत्ता
-quality-description-lossless = FLAC 16-बिट/44.1kHz - CD गुणवत्ता
-quality-description-hires = FLAC 24-बिट/192kHz तक - मास्टर गुणवत्ता (HiFi Plus आवश्यक)
+quality-description-low = सबसे कम डेटा उपयोग
+quality-description-high = लॉसी, लेकिन कम डेटा में
+quality-description-lossless = CD गुणवत्ता
+quality-description-hires = हाई-रेज़ स्ट्रीमिंग वाली सदस्यता आवश्यक
 account = खाता
 about = बारे में
 version = संस्करण

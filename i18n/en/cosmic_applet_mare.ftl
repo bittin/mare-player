@@ -8,10 +8,12 @@ open-browser = Open Browser
 cancel = Cancel
 verifying-auth = Verifying authentication...
 verifying-auth-wait = Please wait while we confirm your login.
-oauth-open-url = Open this URL in your browser:
-oauth-enter-code = Or enter code: {$code}
-waiting-for-login = Waiting for login...
-complete-login-in-browser = Complete login in browser, then return here.
+login-step-browser = 1. Open the TIDAL login page and sign in:
+login-returns-here = Signing in will bring you straight back here — nothing to copy.
+login-step-paste = 2. The browser then lands on a page that fails to load. Copy its address and paste it here:
+login-redirect-placeholder = https://tidal.com/android/login/auth?code=…
+login-finish = Finish Sign In
+login-retry = That sign-in link was already used or has expired — open the browser again and copy the new address.
 preparing-login = Preparing login...
 
 # Navigation
@@ -130,14 +132,10 @@ debug-unoptimized = (unoptimized)
 
 # Settings
 audio-quality = Audio Quality
-quality-low = Low (96 kbps)
-quality-high = High (320 kbps)
-quality-lossless = Lossless (CD Quality)
-quality-hires = Hi-Res (Master Quality)
-quality-description-low = 96 kbps AAC - Uses less data
-quality-description-high = 320 kbps AAC - Good quality
-quality-description-lossless = FLAC 16-bit/44.1kHz - CD quality
-quality-description-hires = FLAC up to 24-bit/192kHz - Master quality (requires HiFi Plus)
+quality-description-low = Smallest data use
+quality-description-high = Lossy, but light on data
+quality-description-lossless = CD quality
+quality-description-hires = Needs a subscription tier that includes hi-res streaming
 account = Account
 about = About
 version = Version

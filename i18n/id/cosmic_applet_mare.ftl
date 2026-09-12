@@ -8,10 +8,12 @@ open-browser = Buka Peramban
 cancel = Batal
 verifying-auth = Memverifikasi autentikasi...
 verifying-auth-wait = Mohon tunggu sementara kami mengonfirmasi login Anda.
-oauth-open-url = Buka URL ini di peramban Anda:
-oauth-enter-code = Atau masukkan kode: {$code}
-waiting-for-login = Menunggu login...
-complete-login-in-browser = Selesaikan login di peramban, lalu kembali ke sini.
+login-step-browser = 1. Buka halaman login TIDAL dan masuk:
+login-returns-here = Setelah masuk, Anda langsung kembali ke sini — tidak ada yang perlu disalin.
+login-step-paste = 2. Peramban lalu menuju halaman yang gagal dimuat. Salin alamatnya dan tempel di sini:
+login-redirect-placeholder = https://tidal.com/android/login/auth?code=…
+login-finish = Selesaikan Masuk
+login-retry = Tautan masuk itu sudah dipakai atau kedaluwarsa — buka peramban lagi dan salin alamat yang baru.
 preparing-login = Menyiapkan login...
 
 # Navigasi
@@ -104,14 +106,10 @@ debug-unoptimized = (belum dioptimalkan)
 
 # Pengaturan
 audio-quality = Kualitas Audio
-quality-low = Rendah (96 kbps)
-quality-high = Tinggi (320 kbps)
-quality-lossless = Lossless (Kualitas CD)
-quality-hires = Hi-Res (Kualitas Master)
-quality-description-low = 96 kbps AAC - Penggunaan data lebih sedikit
-quality-description-high = 320 kbps AAC - Kualitas baik
-quality-description-lossless = FLAC 16-bit/44.1kHz - Kualitas CD
-quality-description-hires = FLAC hingga 24-bit/192kHz - Kualitas master (memerlukan HiFi Plus)
+quality-description-low = Penggunaan data paling sedikit
+quality-description-high = Lossy, tetapi hemat data
+quality-description-lossless = Kualitas CD
+quality-description-hires = Perlu langganan yang mencakup streaming hi-res
 account = Akun
 about = Tentang
 version = Versi
