@@ -314,8 +314,6 @@ pub enum Message {
     ShareAlbum(String, String),
     /// Cancel share dialog
     CancelShare,
-    /// Result of generating a song.link URL
-    ShareLinkGenerated(Result<String, String>),
 
     // Settings
     /// Set audio quality preference
@@ -337,6 +335,10 @@ pub enum Message {
     // Volume control
     /// Adjust volume by delta (positive = up, negative = down)
     AdjustVolume(f32),
+    /// A scroll event over a volume control, before it becomes a step.
+    /// See [`WheelVolume`](crate::state::WheelVolume) for why the raw delta
+    /// travels rather than a ready-made adjustment.
+    VolumeScroll(cosmic::iced::mouse::ScrollDelta),
     /// Set volume to an absolute level (0.0 to 1.0)
     SetVolume(f32),
     /// Toggle the volume popup (standalone mode only)
@@ -358,5 +360,7 @@ pub enum Message {
 
     // Wayland surface actions (used by responsive_menu_bar for popup menus)
     /// Forward a surface action to the COSMIC runtime (menu popups on Wayland).
-    Surface(surface::Action),
+    /// The action is generic over the message type a popup's view produces,
+    /// which for our popups is this enum.
+    Surface(surface::Action<Message>),
 }

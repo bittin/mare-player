@@ -27,6 +27,10 @@ use tokio::sync::Mutex;
 pub use crate::messages::Message;
 pub use crate::state::{AppModel, ViewState};
 
+/// How many thumbnail requests may be waiting to be dispatched at once.
+/// Roughly two screenfuls of rows.
+const THUMBNAIL_REQUEST_QUEUE: usize = 24;
+
 impl cosmic::Application for AppModel {
     type Executor = cosmic::executor::Default;
 
@@ -172,6 +176,9 @@ impl cosmic::Application for AppModel {
             gst_transitions_seen: 0,
             video_controls_shown_at: None,
             video_resume_target: None,
+            stream_minted_at: None,
+            stream_reminted_at: None,
+            audio_resume_target: None,
             playback_state: PlaybackState::Stopped,
             now_playing: None,
             playback_position: 0.0,
@@ -195,6 +202,7 @@ impl cosmic::Application for AppModel {
             seek_debounce_version: 0,
             playback_resolve_version: 0,
             volume_level: saved_volume,
+            wheel_volume: crate::state::WheelVolume::default(),
             show_volume_bar: false,
             volume_bar_shown_at: None,
             #[cfg(not(feature = "panel-applet"))]
@@ -209,7 +217,12 @@ impl cosmic::Application for AppModel {
         // Wire up the lazy thumbnail-request channel: renderers ping the
         // sender on cache miss (via `HandleCache::get_or_request`), and a
         // subscription drains the receiver, dispatching `LoadImage` per URL.
-        let (thumb_tx, thumb_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        // Bounded on purpose. A layout pass measures every row in a list, not
+        // just the visible ones, so this channel's producer is unbounded by
+        // design; the bound turns that into a window. A dropped request costs
+        // nothing: a row that is actually visible is rebuilt on the next frame
+        // and asks again.
+        let (thumb_tx, thumb_rx) = tokio::sync::mpsc::channel::<String>(THUMBNAIL_REQUEST_QUEUE);
         app.loaded_images.set_request_tx(thumb_tx);
         app.thumbnail_request_rx = Some(Arc::new(Mutex::new(thumb_rx)));
 
@@ -446,12 +459,13 @@ impl cosmic::Application for AppModel {
             }));
         }
 
-        // Lazy thumbnail-load subscription: drain the channel populated by
-        // `HandleCache::get_or_request` and dispatch `LoadImage` per URL.
-        // `handle_load_image` already dedupes against `pending_image_loads`
-        // and `loaded_images`, so flooding from re-renders is harmless.
+        // Lazy thumbnail-load subscription: drain the bounded channel that
+        // `HandleCache::get_or_request` fills and dispatch `LoadImage` per URL.
+        // `handle_load_image` dedupes against `pending_image_loads` and
+        // `loaded_images` and caps how many run at once, so a re-render that
+        // asks for every row costs a few lookups.
         if let Some(rx) = &self.thumbnail_request_rx {
-            struct ThumbRx(Arc<Mutex<tokio::sync::mpsc::UnboundedReceiver<String>>>);
+            struct ThumbRx(Arc<Mutex<tokio::sync::mpsc::Receiver<String>>>);
 
             impl std::hash::Hash for ThumbRx {
                 fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
@@ -526,6 +540,7 @@ impl cosmic::Application for AppModel {
             | Message::HistoryFilterChanged(_)
             | Message::FavoriteTracksFilterChanged(_)
             | Message::AdjustVolume(_)
+            | Message::VolumeScroll(_)
             | Message::SetVolume(_)
             | Message::VideoWindowEvent(_)
             | Message::ArtistTopTracksLoaded(_)
@@ -856,7 +871,6 @@ impl cosmic::Application for AppModel {
                 self.handle_cancel_share();
                 Task::none()
             }
-            Message::ShareLinkGenerated(result) => self.handle_share_link_generated(result),
 
             // Misc handlers - MPRIS
             Message::MprisServiceStarted(result) => self.handle_mpris_service_started(result),
@@ -911,6 +925,7 @@ impl cosmic::Application for AppModel {
 
             // Volume control
             Message::AdjustVolume(delta) => self.handle_adjust_volume(delta),
+            Message::VolumeScroll(delta) => self.handle_volume_scroll(delta),
             Message::SetVolume(level) => {
                 let delta = level.clamp(0.0, 1.0) - self.volume_level;
                 self.handle_adjust_volume(delta)
@@ -955,7 +970,7 @@ impl cosmic::Application for AppModel {
             }
 
             // Wayland surface action forwarding (responsive menu bar popups)
-            Message::Surface(action) => cosmic::task::message(cosmic::Action::Cosmic(cosmic::app::Action::Surface(action))),
+            Message::Surface(action) => cosmic::task::message(cosmic::Action::Surface(action)),
         }
     }
 

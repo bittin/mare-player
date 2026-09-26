@@ -28,6 +28,9 @@ pub(crate) async fn load_play_history(db: &crate::cache::Db) -> Vec<crate::tidal
     db.get_play_history().await.iter().filter_map(|b| serde_json::from_slice::<HistoryEntry>(b).ok()).collect()
 }
 
+/// How many image loads may be in flight at once.
+const MAX_IMAGE_LOADS_IN_FLIGHT: usize = 24;
+
 impl AppModel {
     /// Handle subscription channel event (startup)
     pub fn handle_subscription_channel(&mut self) -> Task<cosmic::Action<Message>> {
@@ -53,6 +56,14 @@ impl AppModel {
     pub fn handle_load_image(&mut self, url: String) -> Task<cosmic::Action<Message>> {
         // Skip if already loaded or pending
         if self.loaded_images.contains_key(&url) || self.pending_image_loads.contains(&url) {
+            return Task::none();
+        }
+        // Every load holds the cache connection for a read and then lands a
+        // decoded handle on the update loop, so the number in flight is the
+        // number of frames the user waits. Rows that are on screen are rebuilt
+        // every frame and ask again, so refusing here costs a frame, not an
+        // image.
+        if self.pending_image_loads.len() >= MAX_IMAGE_LOADS_IN_FLIGHT {
             return Task::none();
         }
         self.pending_image_loads.insert(url.clone());
@@ -208,22 +219,18 @@ impl AppModel {
             return self.copy_and_open_share(url);
         }
 
-        let tidal_url = format!("https://tidal.com/browse/track/{}", track_id);
-        tracing::info!("Generating song.link for track: {}", track_title);
-        Task::perform(async move { crate::helpers::generate_songlink(&tidal_url).await }, |result| {
-            cosmic::Action::App(Message::ShareLinkGenerated(result))
-        })
+        let url = crate::helpers::songlink_url(&format!("https://tidal.com/browse/track/{track_id}"));
+        tracing::info!("Sharing song.link for track: {}", track_title);
+        self.copy_and_open_share(url)
     }
 
     /// Handle share album
     pub fn handle_share_album(&mut self, album_id: String, album_title: String) -> Task<cosmic::Action<Message>> {
-        let tidal_url = format!("https://tidal.com/browse/album/{}", album_id);
-        tracing::info!("Generating song.link for album: {}", album_title);
+        let url = crate::helpers::songlink_url(&format!("https://tidal.com/browse/album/{album_id}"));
+        tracing::info!("Sharing song.link for album: {}", album_title);
         // Return to previous view
         self.view_state = ViewState::Main;
-        Task::perform(async move { crate::helpers::generate_songlink(&tidal_url).await }, |result| {
-            cosmic::Action::App(Message::ShareLinkGenerated(result))
-        })
+        self.copy_and_open_share(url)
     }
 
     /// Handle cancel share
@@ -254,21 +261,6 @@ impl AppModel {
             },
             |_| cosmic::Action::App(Message::ClearError),
         )
-    }
-
-    /// Handle share link generated
-    pub fn handle_share_link_generated(&mut self, result: Result<String, String>) -> Task<cosmic::Action<Message>> {
-        match result {
-            Ok(url) => {
-                tracing::info!("Song.link generated: {}", url);
-                self.copy_and_open_share(url)
-            }
-            Err(e) => {
-                tracing::error!("Failed to generate share link: {}", e);
-                self.error_message = Some(format!("Failed to generate share link: {}", e));
-                Task::none()
-            }
-        }
     }
 
     /// Handle MPRIS service started

@@ -23,6 +23,9 @@ use reqwest::header::AUTHORIZATION;
 use serde::Deserialize;
 use std::collections::HashSet;
 use std::sync::Arc;
+use tidlers::client::models::playback::{AssetPresentation, PlaybackMode, VideoQuality};
+use tidlers::client::models::track::config::TrackPlaybackInfoConfig;
+use tidlers::client::models::video::config::VideoPlaybackInfoConfig;
 use tidlers::{TidalClient, auth::TidalAuth, client::models::collection::favorites::FavoriteResourceType};
 use tokio::sync::Mutex;
 use tracing::{debug, error, info, warn};
@@ -254,7 +257,16 @@ struct ApiAlbumData {
     cover: String,
     explicit: bool,
     audio_quality: Option<String>,
+    /// The tiers TIDAL advertises, which `audio_quality` above does not
+    /// reliably describe. Absent from some responses.
+    media_metadata: Option<ApiMediaMetadata>,
     artist: ApiAlbumArtist,
+}
+
+#[derive(Debug, Deserialize)]
+struct ApiMediaMetadata {
+    #[serde(default)]
+    tags: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -277,6 +289,7 @@ impl From<ApiAlbumData> for Album {
             cover_url: Some(tidal_cover_url(&a.cover)),
             explicit: a.explicit,
             audio_quality: a.audio_quality,
+            quality_tags: a.media_metadata.map(|m| m.tags).unwrap_or_default(),
             review: None,
         }
     }
@@ -1238,55 +1251,32 @@ impl TidalAppClient {
 
     /// Resolve the playable HLS (`.m3u8`) URL for a music **video**.
     ///
-    /// TIDAL videos are DRM-free HLS: `GET /v1/videos/{id}/playbackinfopostpaywall`
-    /// returns a base64 "EMU" manifest that simply wraps the HLS master URL.
-    /// We decode it and hand the URL to the GStreamer pipeline. (Verified the
-    /// inner HLS carries no `EXT-X-KEY`/Widevine, so no CDM is needed.)
+    /// TIDAL videos are DRM-free HLS: the playbackinfo endpoint returns a
+    /// base64 "EMU" manifest that wraps the HLS master URL, which tidlers
+    /// decodes into [`EmuVideoManifest`]. (Verified the inner HLS carries no
+    /// `EXT-X-KEY`/Widevine, so no CDM is needed.)
     pub async fn get_video_hls_url(&self, video_id: &str) -> TidalResult<String> {
         self.ensure_valid_token().await?;
-        let ctx = self.auth_context().await?;
 
-        let url = format!(
-            "https://api.tidal.com/v1/videos/{}/playbackinfopostpaywall?videoquality=HIGH&playbackmode=STREAM&assetpresentation=FULL&countryCode={}",
-            video_id, ctx.country_code
-        );
+        let client_guard = self.client.lock().await;
+        let client = client_guard.as_ref().ok_or(TidalError::NotAuthenticated)?;
+
         debug!("Fetching video playback info for: {}", video_id);
 
-        let http_client = reqwest::Client::new();
-        let response = http_client
-            .get(&url)
-            .header(AUTHORIZATION, format!("Bearer {}", ctx.access_token))
-            .send()
+        let config = VideoPlaybackInfoConfig {
+            video_quality: Some(VideoQuality::High),
+            playback_mode: Some(PlaybackMode::Stream),
+            asset_presentation: Some(AssetPresentation::Full),
+        };
+
+        let info = client
+            .get_video_postpaywall_playback_info(video_id, Some(config))
             .await
-            .map_err(|e| TidalError::NetworkError(format!("video playback request failed: {}", e)))?;
+            .map_err(|e| TidalError::RequestFailed(format!("video playback info: {e:?}")))?;
 
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            error!("Video playback info failed: {} - {}", status, body);
-            return Err(TidalError::RequestFailed(format!("HTTP {}", status)));
-        }
-
-        let body = response.text().await.map_err(|e| TidalError::NetworkError(format!("reading video playback body: {}", e)))?;
-
-        #[derive(Deserialize)]
-        struct VideoPlaybackInfo {
-            manifest: String,
-        }
-        #[derive(Deserialize)]
-        struct EmuManifest {
-            urls: Vec<String>,
-        }
-
-        let info: VideoPlaybackInfo =
-            serde_json::from_str(&body).map_err(|e| TidalError::ParseError(format!("video playback JSON: {}", e)))?;
-        let manifest_bytes = general_purpose::STANDARD
-            .decode(info.manifest.as_bytes())
-            .map_err(|e| TidalError::ParseError(format!("video manifest base64: {}", e)))?;
-        let emu: EmuManifest = serde_json::from_slice(&manifest_bytes)
-            .map_err(|e| TidalError::ParseError(format!("video EMU manifest JSON: {}", e)))?;
-
-        emu.urls.into_iter().next().ok_or_else(|| TidalError::ParseError("video manifest contained no URLs".to_string()))
+        info.manifest
+            .and_then(|manifest| manifest.urls.into_iter().next())
+            .ok_or_else(|| TidalError::ParseError("video manifest contained no URLs".to_string()))
     }
 
     /// Get album tracks
@@ -1333,12 +1323,10 @@ impl TidalAppClient {
 
     /// Get track playback URL with full DASH support for HiRes quality
     ///
-    /// For HiRes quality, TIDAL returns DASH manifests. This function writes
-    /// the DASH manifest to a temporary file and returns the path.
-    ///
-    /// For Low/High/Lossless quality, returns a direct streaming URL.
+    /// For HiRes quality, TIDAL returns DASH manifests, which are handed to
+    /// GStreamer inline. For Low/High/Lossless quality, returns a direct
+    /// streaming URL.
     pub async fn get_track_playback_url(&self, track_id: &str) -> TidalResult<PlaybackUrl> {
-        // Ensure token is valid before the operation
         self.ensure_valid_token().await?;
 
         let client_guard = self.client.lock().await;
@@ -1346,56 +1334,26 @@ impl TidalAppClient {
 
         info!("Getting playback URL for track: {} with quality: {:?}", track_id, self.audio_quality);
 
-        // Get auth info for our own request (we need the raw manifest)
-        let access_token = client.session.auth.access_token.as_ref().ok_or_else(|| {
-            error!("No access token available");
-            TidalError::NotAuthenticated
-        })?;
+        let config = TrackPlaybackInfoConfig {
+            audio_quality: Some(self.audio_quality.tidlers_quality()),
+            playback_mode: Some(PlaybackMode::Stream),
+            asset_presentation: Some(AssetPresentation::Full),
+        };
 
-        let country_code = client.user_info.as_ref().map(|u| u.country_code.as_str()).unwrap_or("US");
-
-        let url = format!(
-            "https://api.tidal.com/v1/tracks/{}/playbackinfopostpaywall?audioquality={}&playbackmode=STREAM&assetpresentation=FULL&countryCode={}",
-            track_id,
-            self.audio_quality.tidal_param(),
-            country_code
-        );
-
-        let http_client = reqwest::Client::new();
-        let response = http_client
-            .get(&url)
-            .header(AUTHORIZATION, format!("Bearer {}", access_token))
-            .send()
+        let info = client
+            .get_track_postpaywall_playback_info(track_id, Some(config))
             .await
-            .map_err(|e| TidalError::RequestFailed(format!("HTTP request failed: {}", e)))?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            error!("Playback info request failed: {} - {}", status, body);
-            return Err(TidalError::RequestFailed(format!("HTTP {}", status)));
-        }
-
-        let body = response.text().await.map_err(|e| TidalError::RequestFailed(format!("Failed to read response: {}", e)))?;
-
-        // Parse the response
-        let parsed: serde_json::Value =
-            serde_json::from_str(&body).map_err(|e| TidalError::ParseError(format!("Failed to parse JSON: {}", e)))?;
-
-        let manifest_mime_type = parsed.get("manifestMimeType").and_then(|v| v.as_str()).unwrap_or("");
-
-        let audio_quality = parsed.get("audioQuality").and_then(|v| v.as_str()).unwrap_or("unknown");
-
-        let audio_mode = parsed.get("audioMode").and_then(|v| v.as_str()).unwrap_or("unknown");
+            .map_err(|e| TidalError::RequestFailed(format!("playback info: {e:?}")))?;
 
         // What TIDAL *actually served*, which is not necessarily what we asked
         // for — the backend answers an out-of-reach tier with a lower one
         // instead of erroring. The only trustworthy source for the badge the
         // now-playing bar shows; see `StreamQuality` for why.
-        let sample_rate = parsed.get("sampleRate").and_then(|v| v.as_u64()).map(|v| v as u32);
-        let bit_depth = parsed.get("bitDepth").and_then(|v| v.as_u64()).map(|v| v as u32);
-        let stream_quality =
-            (audio_quality != "unknown").then(|| StreamQuality { quality: audio_quality.to_string(), sample_rate, bit_depth });
+        let stream_quality = (!info.audio_quality.is_empty()).then(|| StreamQuality {
+            quality: info.audio_quality.clone(),
+            sample_rate: info.sample_rate,
+            bit_depth: info.bit_depth,
+        });
 
         if let Some(served) = &stream_quality {
             let requested = self.audio_quality.tidal_param();
@@ -1411,54 +1369,32 @@ impl TidalAppClient {
             }
         }
 
-        let replay_gain_db = parsed.get("albumReplayGain").and_then(|v| v.as_f64()).map(|v| v as f32);
-
-        let peak_amplitude = parsed.get("albumPeakAmplitude").and_then(|v| v.as_f64()).map(|v| v as f32);
+        let replay_gain_db = Some(info.album_replay_gain as f32);
 
         info!(
-            "Playback info received - audio_quality: {}, audio_mode: {}, manifest_mime_type: {}, sample_rate: {:?}, bit_depth: {:?}, replay_gain: {:?} dB, peak: {:?}",
-            audio_quality, audio_mode, manifest_mime_type, sample_rate, bit_depth, replay_gain_db, peak_amplitude
+            "Playback info received - audio_quality: {}, audio_mode: {}, manifest_mime_type: {}, sample_rate: {:?}, bit_depth: {:?}, replay_gain: {:?} dB, peak: {}",
+            info.audio_quality,
+            info.audio_mode,
+            info.manifest_mime_type,
+            info.sample_rate,
+            info.bit_depth,
+            replay_gain_db,
+            info.album_peak_amplitude
         );
 
-        let manifest_b64 = parsed
-            .get("manifest")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| TidalError::ParseError("No manifest in response".to_string()))?;
-
-        let manifest_bytes = general_purpose::STANDARD
-            .decode(manifest_b64)
-            .map_err(|e| TidalError::ParseError(format!("Failed to decode manifest: {}", e)))?;
-
-        let manifest_str =
-            String::from_utf8(manifest_bytes).map_err(|e| TidalError::ParseError(format!("Invalid UTF-8 in manifest: {}", e)))?;
-
-        // Check if this is a DASH manifest (used for HiRes)
-        if manifest_mime_type.contains("dash") {
+        // DASH (both FLAC tiers): the manifest goes to GStreamer verbatim, so
+        // the raw XML is what matters, not tidlers' parse of it.
+        if info.manifest_mime_type.contains("dash") {
+            let manifest =
+                info.manifest_raw.ok_or_else(|| TidalError::ParseError("DASH response carried no manifest".to_string()))?;
             info!("DASH manifest detected - playing inline");
-            let preview_len = manifest_str.len().min(500);
-            let preview: String = manifest_str.chars().take(preview_len).collect();
-            debug!("DASH manifest content:\n{}", preview);
-
-            // Hand the manifest to GStreamer inline (as a data: URI) rather than
-            // writing it to disk — see `PlaybackUrl::as_url`. The manifest is
-            // single-use anyway (its segment URLs carry short-lived tokens), so
-            // there is nothing worth persisting.
-            return Ok(PlaybackUrl::DashManifest(manifest_str, replay_gain_db, stream_quality));
+            debug!("DASH manifest content:\n{}", manifest.chars().take(500).collect::<String>());
+            return Ok(PlaybackUrl::DashManifest(manifest, replay_gain_db, stream_quality));
         }
 
-        // For non-DASH (JSON manifest with direct URLs)
-        let manifest: serde_json::Value = serde_json::from_str(&manifest_str)
-            .map_err(|e| TidalError::ParseError(format!("Failed to parse manifest JSON: {}", e)))?;
-
-        if let Some(urls) = manifest.get("urls").and_then(|v| v.as_array())
-            && let Some(first_url) = urls.first()
-            && let Some(url_str) = first_url.as_str()
-        {
-            info!("Got direct playback URL");
-            return Ok(PlaybackUrl::Direct(url_str.to_string(), replay_gain_db, stream_quality));
-        }
-
-        Err(TidalError::RequestFailed("No playback URL available".to_string()))
+        let url = info.get_primary_url().ok_or_else(|| TidalError::RequestFailed("No playback URL available".to_string()))?;
+        info!("Got direct playback URL");
+        Ok(PlaybackUrl::Direct(url, replay_gain_db, stream_quality))
     }
 
     /// Add a track to user's favorites
@@ -2509,6 +2445,12 @@ impl TidalAppClient {
             cover_url: it.get("cover").and_then(|v| v.as_str()).map(tidal_cover_url),
             explicit: it.get("explicit").and_then(|v| v.as_bool()).unwrap_or(false),
             audio_quality: it.get("audioQuality").and_then(|v| v.as_str()).map(|s| s.to_string()),
+            quality_tags: it
+                .get("mediaMetadata")
+                .and_then(|m| m.get("tags"))
+                .and_then(|t| t.as_array())
+                .map(|tags| tags.iter().filter_map(|t| t.as_str().map(str::to_string)).collect())
+                .unwrap_or_default(),
             review: None,
         })
     }
@@ -2803,6 +2745,7 @@ impl TidalAppClient {
                 cover_url: album.cover.as_deref().map(tidal_cover_url),
                 explicit: album.explicit,
                 audio_quality: album.audio_quality,
+                quality_tags: Vec::new(),
                 review: None,
             }),
             TItem::HistoryMix(mix) => {

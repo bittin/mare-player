@@ -7,8 +7,9 @@
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
+use cosmic::iced::mouse::ScrollDelta;
 use cosmic::iced::widget::list;
 use cosmic::iced::window::Id;
 #[cfg(not(feature = "panel-applet"))]
@@ -56,7 +57,7 @@ pub(crate) struct HandleCache {
     /// a missing thumbnail.  Set late (after the channel is created in
     /// `AppModel::init`).  When `None`, [`HandleCache::get_or_request`] behaves exactly
     /// like [`Self::get`].
-    request_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>,
+    request_tx: Option<tokio::sync::mpsc::Sender<String>>,
 }
 
 impl HandleCache {
@@ -67,7 +68,7 @@ impl HandleCache {
 
     /// Install the channel that [`Self::get_or_request`] uses to request lazy
     /// loads of missing thumbnails.  Called once at app init.
-    pub(crate) fn set_request_tx(&mut self, tx: tokio::sync::mpsc::UnboundedSender<String>) {
+    pub(crate) fn set_request_tx(&mut self, tx: tokio::sync::mpsc::Sender<String>) {
         self.request_tx = Some(tx);
     }
 
@@ -103,9 +104,11 @@ impl HandleCache {
         if !key.is_empty()
             && let Some(tx) = &self.request_tx
         {
-            // Channel is unbounded; send only fails if the receiver was
-            // dropped (shouldn't happen during normal operation).  Ignore.
-            let _ = tx.send(key.to_string());
+            // Fails when the queue is full, which is the point: a layout pass
+            // asks for every row in the list, and only the visible ones will ask
+            // again. Also fails if the receiver was dropped, which does not happen
+            // in normal operation. Either way there is nothing to do.
+            let _ = tx.try_send(key.to_string());
         }
         None
     }
@@ -139,6 +142,67 @@ impl HandleCache {
             }
         }
         self.map.insert(key, (value, Cell::new(new_counter)));
+    }
+}
+
+/// Scroll travel worth one volume step, in the units libinput reports for a
+/// wheel detent.
+const PIXELS_PER_STEP: f32 = 15.0;
+
+/// How long after a discrete scroll event its duplicate is discarded.
+///
+/// The pair arrives 9-16 ms apart, and a hand on a wheel cannot produce two
+/// notches that fast, so the window separates them cleanly.
+const DISCRETE_REPEAT_WINDOW: Duration = Duration::from_millis(25);
+
+/// A discrete scroll event, kept to recognise the duplicate that follows it.
+struct Discrete {
+    at: Instant,
+    /// The line count it carried; a duplicate carries the same one.
+    y: f32,
+    /// Whether the duplicate has already been discarded.
+    duplicate_seen: bool,
+}
+
+/// Turns scroll events into volume steps.
+///
+/// Each wheel notch reaches the applet **twice**. `mouse_area::update` in
+/// libcosmic's iced fork publishes `on_scroll` from the `WheelScrolled` arm of
+/// its event match, then again from an `if let` below the match that the arm
+/// falls through to, so one event becomes two messages 9-16 ms apart. Taking
+/// both moves the volume two steps per notch, so the duplicate is discarded —
+/// at most one per event, leaving two real notches worth two steps however
+/// they are doubled.
+///
+/// Trackpads send `Pixels` rather than notches, and those scale straight to a
+/// fraction of a step: volume is continuous, so a small drag is a small change.
+#[derive(Default)]
+pub(crate) struct WheelVolume {
+    /// The last discrete event applied.
+    last_discrete: Option<Discrete>,
+}
+
+impl WheelVolume {
+    /// The volume change this scroll event is worth, as a multiple of
+    /// [`VOLUME_STEP`](crate::views::components::VOLUME_STEP). Zero when the
+    /// event is the duplicate of the one before it.
+    pub(crate) fn steps(&mut self, delta: ScrollDelta, now: Instant) -> f32 {
+        let step = crate::views::components::VOLUME_STEP;
+        match delta {
+            ScrollDelta::Lines { y, .. } => {
+                if let Some(last) = &mut self.last_discrete
+                    && !last.duplicate_seen
+                    && last.y == y
+                    && now.saturating_duration_since(last.at) < DISCRETE_REPEAT_WINDOW
+                {
+                    last.duplicate_seen = true;
+                    return 0.0;
+                }
+                self.last_discrete = Some(Discrete { at: now, y, duplicate_seen: false });
+                y * step
+            }
+            ScrollDelta::Pixels { y, .. } => (y / PIXELS_PER_STEP) * step,
+        }
     }
 }
 
@@ -357,7 +421,7 @@ pub struct AppModel {
     /// [`HandleCache::get_or_request`] which pushes onto the sender side;
     /// the subscription drains this receiver and dispatches
     /// [`Message::LoadImage`](crate::messages::Message::LoadImage) for each URL.
-    pub(crate) thumbnail_request_rx: Option<Arc<Mutex<tokio::sync::mpsc::UnboundedReceiver<String>>>>,
+    pub(crate) thumbnail_request_rx: Option<Arc<Mutex<tokio::sync::mpsc::Receiver<String>>>>,
     /// Set of track IDs that are in user's favorites
     pub(crate) favorite_track_ids: HashSet<String>,
     /// MPRIS D-Bus handle for external media control
@@ -377,8 +441,19 @@ pub struct AppModel {
     /// Monotonic version for debouncing playback-URL resolution, so a burst of
     /// rapid skips only resolves the track the user settles on.
     pub(crate) playback_resolve_version: u64,
+    /// When the playing track's stream URL was issued. TIDAL's segment URLs
+    /// stop working an hour later, so this is what says a stream is too old to
+    /// resume or has just died of age.
+    pub(crate) stream_minted_at: Option<Instant>,
+    /// When a stream was last re-minted after a failure, so a stream that is
+    /// broken for some other reason cannot loop.
+    pub(crate) stream_reminted_at: Option<Instant>,
+    /// Where to pick up once a re-minted stream starts, in seconds.
+    pub(crate) audio_resume_target: Option<f64>,
     /// Current volume level (0.0 to 1.0)
     pub(crate) volume_level: f32,
+    /// Turns scroll events into volume steps. See [`WheelVolume`].
+    pub(crate) wheel_volume: WheelVolume,
     /// Whether to show the volume bar overlay (panel-applet scroll-wheel indicator)
     pub(crate) show_volume_bar: bool,
     /// When the volume bar was last shown (for auto-hide)
@@ -478,4 +553,84 @@ pub enum ViewState {
     Settings,
     /// Share prompt dialog (track_id, track_title, album_id, album_title, is_video)
     SharePrompt(String, String, Option<String>, Option<String>, bool),
+}
+
+#[cfg(test)]
+mod wheel_volume_tests {
+    use super::{DISCRETE_REPEAT_WINDOW, WheelVolume};
+    use crate::views::components::VOLUME_STEP;
+    use cosmic::iced::mouse::ScrollDelta;
+    use std::time::{Duration, Instant};
+
+    fn lines(y: f32) -> ScrollDelta {
+        ScrollDelta::Lines { x: 0.0, y }
+    }
+
+    #[test]
+    fn a_notch_is_one_step() {
+        let mut w = WheelVolume::default();
+        assert_eq!(w.steps(lines(1.0), Instant::now()), VOLUME_STEP);
+    }
+
+    #[test]
+    fn a_notch_is_signed_and_scales() {
+        let mut w = WheelVolume::default();
+        assert_eq!(w.steps(lines(-2.0), Instant::now()), -2.0 * VOLUME_STEP);
+    }
+
+    #[test]
+    fn the_duplicate_of_a_notch_is_discarded() {
+        // The pair `mouse_area` publishes, at the spacing the journal shows.
+        let mut w = WheelVolume::default();
+        let now = Instant::now();
+        assert_eq!(w.steps(lines(1.0), now), VOLUME_STEP);
+        assert_eq!(w.steps(lines(1.0), now + Duration::from_millis(15)), 0.0);
+    }
+
+    #[test]
+    fn two_notches_are_two_steps_even_though_each_arrives_twice() {
+        let mut w = WheelVolume::default();
+        let now = Instant::now();
+        let applied: f32 = [
+            w.steps(lines(1.0), now),
+            w.steps(lines(1.0), now + Duration::from_millis(15)),
+            w.steps(lines(1.0), now + Duration::from_millis(600)),
+            w.steps(lines(1.0), now + Duration::from_millis(612)),
+        ]
+        .iter()
+        .sum();
+        assert_eq!(applied, 2.0 * VOLUME_STEP);
+    }
+
+    #[test]
+    fn a_deliberate_notch_after_the_window_still_counts() {
+        let mut w = WheelVolume::default();
+        let now = Instant::now();
+        assert_eq!(w.steps(lines(1.0), now), VOLUME_STEP);
+        assert_eq!(w.steps(lines(1.0), now + DISCRETE_REPEAT_WINDOW), VOLUME_STEP);
+    }
+
+    #[test]
+    fn reversing_direction_is_never_a_duplicate() {
+        let mut w = WheelVolume::default();
+        let now = Instant::now();
+        assert_eq!(w.steps(lines(1.0), now), VOLUME_STEP);
+        assert_eq!(w.steps(lines(-1.0), now + Duration::from_millis(5)), -VOLUME_STEP);
+    }
+
+    #[test]
+    fn a_trackpad_scales_pixels_to_a_fraction_of_a_step() {
+        let mut w = WheelVolume::default();
+        let now = Instant::now();
+        assert_eq!(w.steps(ScrollDelta::Pixels { x: 0.0, y: 15.0 }, now), VOLUME_STEP);
+        assert_eq!(w.steps(ScrollDelta::Pixels { x: 0.0, y: 7.5 }, now), VOLUME_STEP / 2.0);
+    }
+
+    #[test]
+    fn horizontal_scrolling_leaves_the_volume_alone() {
+        let mut w = WheelVolume::default();
+        let now = Instant::now();
+        assert_eq!(w.steps(ScrollDelta::Pixels { x: 999.0, y: 0.0 }, now), 0.0);
+        assert_eq!(w.steps(ScrollDelta::Lines { x: 999.0, y: 0.0 }, now), 0.0);
+    }
 }
