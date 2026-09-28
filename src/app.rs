@@ -585,7 +585,7 @@ impl cosmic::Application for AppModel {
             // query string holds a short-lived auth token. Log a concise,
             // token-free summary (Track + redacted PlaybackUrl Display) rather
             // than dumping the raw Debug.
-            Message::PlaybackUrlReceived(res) => match res {
+            Message::PlaybackUrlReceived(_, res) => match res {
                 Ok((track, url)) => {
                     tracing::info!("update() received: PlaybackUrlReceived(Ok({track}, {url}))")
                 }
@@ -597,7 +597,7 @@ impl cosmic::Application for AppModel {
                 }
                 Err(e) => tracing::info!("update() received: PreloadUrlReceived(Err: {e})"),
             },
-            Message::VideoUrlReceived(res) => match res {
+            Message::VideoUrlReceived(_, res) => match res {
                 Ok((track, _url)) => {
                     tracing::info!("update() received: VideoUrlReceived(Ok({track}, HLS))")
                 }
@@ -820,8 +820,8 @@ impl cosmic::Application for AppModel {
                     Task::none()
                 }
             }
-            Message::PlaybackUrlReceived(result) => self.handle_playback_url_received(result),
-            Message::VideoUrlReceived(result) => self.handle_video_url_received(result),
+            Message::PlaybackUrlReceived(version, result) => self.handle_playback_url_received(version, result),
+            Message::VideoUrlReceived(version, result) => self.handle_video_url_received(version, result),
             Message::VideoInteraction => {
                 self.video_controls_shown_at = Some(std::time::Instant::now());
                 Task::none()

@@ -312,6 +312,70 @@ struct AuthUserContext {
 
 pub type TidalResult<T> = Result<T, TidalError>;
 
+/// A playback-resolution failure. Only confirmed unavailable assets may be
+/// skipped automatically; authentication and transport failures stop playback.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PlaybackFailure {
+    /// TIDAL reports `subStatus: 4005` (asset not ready for playback).
+    Unavailable,
+    /// The server returned 401 without a usable application error code.
+    Rejected,
+    /// Anything else, with the message to show.
+    Failed(String),
+}
+
+impl std::fmt::Display for PlaybackFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PlaybackFailure::Unavailable => write!(f, "This item is not available for playback on TIDAL"),
+            PlaybackFailure::Rejected => {
+                write!(f, "TIDAL refused playback (HTTP 401). The item may be unavailable, or your session may need renewing")
+            }
+            PlaybackFailure::Failed(msg) => write!(f, "{msg}"),
+        }
+    }
+}
+
+/// Interpret a playbackinfo error without inferring availability from HTTP
+/// status alone. TIDAL uses 401 for both authentication and asset failures;
+/// local token-expiry bookkeeping cannot distinguish them.
+pub(crate) fn classify_playback_error(error: &tidlers::error::TidalError) -> PlaybackFailure {
+    use tidlers::error::TidalError as ApiError;
+    use tidlers::requests::RequestClientError;
+
+    match error {
+        ApiError::RequestClient(RequestClientError::Unauthorized) => PlaybackFailure::Rejected,
+        ApiError::RequestClient(RequestClientError::StatusCode { status, body_snippet, .. }) => {
+            #[derive(Deserialize)]
+            struct ApiPlaybackError {
+                #[serde(rename = "subStatus")]
+                sub_status: u32,
+            }
+            if *status == reqwest::StatusCode::UNAUTHORIZED {
+                if serde_json::from_str::<ApiPlaybackError>(body_snippet).is_ok_and(|body| body.sub_status == 4005) {
+                    PlaybackFailure::Unavailable
+                } else {
+                    PlaybackFailure::Rejected
+                }
+            } else {
+                // StatusCode's Display includes the request URL and body, which
+                // can contain credentials. Neither belongs in the UI or journal.
+                PlaybackFailure::Failed(format!("TIDAL playback request failed (HTTP {})", status.as_u16()))
+            }
+        }
+        other => PlaybackFailure::Failed(other.to_string()),
+    }
+}
+
+impl From<TidalError> for PlaybackFailure {
+    fn from(error: TidalError) -> Self {
+        match error {
+            TidalError::Playback(failure) => failure,
+            other => Self::Failed(other.to_string()),
+        }
+    }
+}
+
 /// Errors that can occur during TIDAL operations
 #[derive(Debug, Clone)]
 pub enum TidalError {
@@ -329,6 +393,8 @@ pub enum TidalError {
     NetworkError(String),
     /// Credential storage error
     CredentialError(String),
+    /// A track or video could not be played. See [`PlaybackFailure`].
+    Playback(PlaybackFailure),
 }
 
 impl std::fmt::Display for TidalError {
@@ -341,6 +407,7 @@ impl std::fmt::Display for TidalError {
             TidalError::SessionExpired => write!(f, "Session expired"),
             TidalError::NetworkError(msg) => write!(f, "Network error: {}", msg),
             TidalError::CredentialError(msg) => write!(f, "Credential error: {}", msg),
+            TidalError::Playback(failure) => write!(f, "{failure}"),
         }
     }
 }
@@ -1272,7 +1339,7 @@ impl TidalAppClient {
         let info = client
             .get_video_postpaywall_playback_info(video_id, Some(config))
             .await
-            .map_err(|e| TidalError::RequestFailed(format!("video playback info: {e:?}")))?;
+            .map_err(|e| TidalError::Playback(classify_playback_error(&e)))?;
 
         info.manifest
             .and_then(|manifest| manifest.urls.into_iter().next())
@@ -1343,7 +1410,7 @@ impl TidalAppClient {
         let info = client
             .get_track_postpaywall_playback_info(track_id, Some(config))
             .await
-            .map_err(|e| TidalError::RequestFailed(format!("playback info: {e:?}")))?;
+            .map_err(|e| TidalError::Playback(classify_playback_error(&e)))?;
 
         // What TIDAL *actually served*, which is not necessarily what we asked
         // for — the backend answers an out-of-reach tier with a lower one
@@ -2758,6 +2825,63 @@ impl TidalAppClient {
 
 #[cfg(test)]
 mod tests {
+    fn status_error(status: reqwest::StatusCode, body: &str) -> tidlers::error::TidalError {
+        tidlers::error::TidalError::RequestClient(tidlers::requests::RequestClientError::StatusCode {
+            status,
+            url: "https://example.invalid/playback?token=do-not-log".to_string(),
+            body_snippet: body.to_string(),
+        })
+    }
+
+    #[test]
+    fn only_an_explicit_asset_error_is_unavailable() {
+        let err = status_error(
+            reqwest::StatusCode::UNAUTHORIZED,
+            r#"{"status":401,"subStatus":4005,"userMessage":"Asset is not ready for playback"}"#,
+        );
+        assert_eq!(classify_playback_error(&err), PlaybackFailure::Unavailable);
+    }
+
+    #[test]
+    fn a_401_without_asset_evidence_must_not_skip() {
+        let err = tidlers::error::TidalError::RequestClient(tidlers::requests::RequestClientError::Unauthorized);
+        assert_eq!(classify_playback_error(&err), PlaybackFailure::Rejected);
+        for body in [r#"{"status":401,"subStatus":1001}"#, "{}", "unauthorized", r#"{"subStatus":400"#] {
+            assert_eq!(
+                classify_playback_error(&status_error(reqwest::StatusCode::UNAUTHORIZED, body)),
+                PlaybackFailure::Rejected
+            );
+        }
+    }
+
+    #[test]
+    fn other_http_errors_do_not_skip_or_leak_response_data() {
+        for status in [
+            reqwest::StatusCode::FORBIDDEN,
+            reqwest::StatusCode::NOT_FOUND,
+            reqwest::StatusCode::TOO_MANY_REQUESTS,
+            reqwest::StatusCode::INTERNAL_SERVER_ERROR,
+        ] {
+            let failure = classify_playback_error(&status_error(status, r#"{"subStatus":4005,"token":"private"}"#));
+            assert!(matches!(failure, PlaybackFailure::Failed(_)));
+            assert_eq!(failure.to_string(), format!("TIDAL playback request failed (HTTP {})", status.as_u16()));
+        }
+    }
+
+    #[test]
+    fn anything_else_keeps_its_message() {
+        let err = tidlers::error::TidalError::Other("kaboom".to_string());
+        match classify_playback_error(&err) {
+            PlaybackFailure::Failed(msg) => assert!(msg.contains("kaboom"), "{msg}"),
+            other => panic!("expected a failure, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn an_unavailable_track_reads_as_itself() {
+        assert_eq!(PlaybackFailure::Unavailable.to_string(), "This item is not available for playback on TIDAL");
+    }
+
     use super::*;
 
     #[test]
