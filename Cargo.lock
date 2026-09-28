@@ -6742,7 +6742,7 @@ dependencies = [
 [[package]]
 name = "tidlers"
 version = "0.5.0"
-source = "git+https://github.com/tomkoid/tidlers.git#41eadbdc3aa3441890a5d43586d827fa1a34f7c7"
+source = "git+https://github.com/tomkoid/tidlers.git#de168a20ae682be2350321dcbfcaa357459e4102"
 dependencies = [
  "base64 0.22.1",
  "chrono",
@@ -7336,7 +7336,7 @@ version = "2.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5283634e518fe9e82c7b20520bb4bc209009fd16c82077c802f8111ecbb0117a"
 dependencies = [
- "rand 0.10.2",
+ "rand 0.9.5",
 ]
 
 [[package]]
