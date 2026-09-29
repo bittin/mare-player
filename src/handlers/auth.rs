@@ -245,7 +245,10 @@ impl AppModel {
     }
 
     /// Handle logout
-    pub fn handle_logout(&self) -> Task<cosmic::Action<Message>> {
+    pub fn handle_logout(&mut self) -> Task<cosmic::Action<Message>> {
+        self.unavailable_radio_tracks = Default::default();
+        self.track_radio_loading = false;
+        self.track_radio_request_version = self.track_radio_request_version.wrapping_add(1);
         let client = self.tidal_client.clone();
         Task::perform(
             async move {

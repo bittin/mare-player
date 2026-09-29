@@ -286,6 +286,14 @@ pub struct AppModel {
     /// surfaces them in TIDAL's Recently Played (as a "Track Radio"
     /// tile, via the mix's `mixType=TRACK_MIX`).
     pub(crate) selected_radio_mix_id: Option<String>,
+    /// Track ids whose radio lookup returned 404 during this login session.
+    /// Shared with row builders so every radio control uses the same knowledge.
+    pub(crate) unavailable_radio_tracks: Arc<HashSet<String>>,
+    /// Whether the selected track's radio is being fetched, independent of
+    /// loading state in the view the user navigates back to.
+    pub(crate) track_radio_loading: bool,
+    /// Identifies the latest radio request, including failures and logout.
+    pub(crate) track_radio_request_version: u64,
     /// The track whose lyrics view is currently open.
     pub(crate) selected_lyrics_track: Option<Track>,
     /// Lyrics loaded for `selected_lyrics_track`.  `None` while loading;

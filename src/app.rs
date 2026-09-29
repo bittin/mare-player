@@ -141,6 +141,9 @@ impl cosmic::Application for AppModel {
             selected_radio_tracks: Vec::new(),
             selected_radio_source_track: None,
             selected_radio_mix_id: None,
+            unavailable_radio_tracks: Arc::default(),
+            track_radio_loading: false,
+            track_radio_request_version: 0,
             selected_lyrics_track: None,
             selected_track_lyrics: None,
             current_lyric_index: None,
@@ -570,7 +573,7 @@ impl cosmic::Application for AppModel {
             | Message::SearchComplete(_)
             | Message::MixesLoaded(_)
             | Message::MixTracksLoaded(_)
-            | Message::TrackRadioLoaded(_)
+            | Message::TrackRadioLoaded(_, _, _)
             | Message::TrackLyricsLoaded(_)
             | Message::TrackCreditsLoaded(_)
             | Message::TrackDetailArtistAlbumsLoaded(_)
@@ -699,7 +702,7 @@ impl cosmic::Application for AppModel {
 
             // Data handlers - track radio
             Message::ShowTrackRadio(track) => self.handle_show_track_radio(track),
-            Message::TrackRadioLoaded(result) => self.handle_track_radio_loaded(result),
+            Message::TrackRadioLoaded(version, track_id, result) => self.handle_track_radio_loaded(version, track_id, result),
 
             // Data handlers - track lyrics
             Message::ShowLyrics(track) => self.handle_show_lyrics(track),

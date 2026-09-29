@@ -86,7 +86,7 @@ impl AppModel {
                 (Some(uuid), Some(name)) => Some(crate::tidal::models::PlaybackSource::playlist(uuid.clone(), name.clone())),
                 _ => None,
             };
-            let opts = TrackRowOptions { tracks: Arc::clone(&self.track_list_arc), source, ..Default::default() };
+            let opts = TrackRowOptions { tracks: Arc::clone(&self.track_list_arc), source, ..self.track_row_options() };
 
             let track_list = cosmic::iced::widget::list::List::new(&self.track_list_content, move |index, track| {
                 virtual_list_row(build_track_row(loaded_images, track, index, &opts), 2)

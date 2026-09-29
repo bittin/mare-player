@@ -315,9 +315,12 @@ impl AppModel {
         self.selected_radio_source_track = Some(track.clone());
         self.selected_radio_tracks.clear();
         self.selected_radio_mix_id = None;
-        self.is_loading = true;
+        self.set_track_list(Vec::new());
+        self.track_radio_request_version = self.track_radio_request_version.wrapping_add(1);
+        self.track_radio_loading = !track.is_video && !self.unavailable_radio_tracks.contains(&track.id);
+        self.error_message = None;
         self.view_state = ViewState::TrackRadio;
-        self.load_track_radio(track.id)
+        if self.track_radio_loading { self.load_track_radio(track.id) } else { Task::none() }
     }
 
     /// Handle show lyrics view for a specific track.

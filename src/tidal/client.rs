@@ -2590,34 +2590,83 @@ impl TidalAppClient {
     /// returns a mix id (`mixType=TRACK_MIX`), whose items we then fetch
     /// via `GET /v1/mixes/{mix_id}/items`.  Both hops go through tidlers.
     ///
-    /// Returns `(mix_id, tracks)`.  The mix id is what lets plays from
+    /// Returns `None` when the seed has no radio mix (404), otherwise
+    /// `Some((mix_id, tracks))`. The mix id is what lets plays from
     /// this view report as `sourceType=MIX, sourceId=<mix_id>` — the
     /// ONLY attribution that actually surfaces track-radio listening in
     /// TIDAL's Recently Played (empirically confirmed; the older
     /// `/tracks/{id}/radio` flat-list endpoint carries no mix id, so
     /// its plays could only be reported as the dead-end `TRACK_RADIO`
     /// sourceType that TIDAL's play_log silently drops).
-    pub async fn get_track_mix(&self, track_id: &str) -> TidalResult<(String, Vec<Track>)> {
+    pub async fn get_track_mix(&self, track_id: &str) -> TidalResult<Option<(String, Vec<Track>)>> {
         self.ensure_valid_token().await?;
         info!("Fetching track mix for track {}", track_id);
 
         let client_guard = self.client.lock().await;
         let client = client_guard.as_ref().ok_or(TidalError::NotAuthenticated)?;
-        let mix_response = client
-            .get_track_mix(track_id, None, None)
-            .await
-            .map_err(|e| TidalError::RequestFailed(format!("track mix: {e:?}")))?;
+        let Some(mix_response) = Self::track_radio_lookup(client.get_track_mix(track_id, None, None).await)? else {
+            info!("No track radio available for seed {}", track_id);
+            return Ok(None);
+        };
         let mix_id = mix_response.id;
 
-        let items_response = client
-            .get_mix_tracks(mix_id.clone(), None, None)
-            .await
-            .map_err(|e| TidalError::RequestFailed(format!("track mix items: {e:?}")))?;
+        let items_response = client.get_mix_tracks(mix_id.clone(), None, None).await.map_err(Self::track_radio_error)?;
         drop(client_guard);
 
         let tracks: Vec<Track> = items_response.items.into_iter().map(Track::from).collect();
         info!("Loaded track mix {} with {} tracks for seed track {}", mix_id, tracks.len(), track_id);
-        Ok((mix_id, tracks))
+        Ok(Some((mix_id, tracks)))
+    }
+
+    /// Only a missing seed mix is an ordinary absence. A later failure to
+    /// fetch its items is retryable and must not disable the seed's radio.
+    fn track_radio_lookup<T>(result: Result<T, tidlers::error::TidalError>) -> TidalResult<Option<T>> {
+        use tidlers::error::TidalError as ApiError;
+        use tidlers::requests::RequestClientError;
+        match result {
+            Ok(mix) => Ok(Some(mix)),
+            Err(ApiError::NotFound) => Ok(None),
+            Err(ApiError::RequestClient(RequestClientError::StatusCode { status, .. }))
+                if status == reqwest::StatusCode::NOT_FOUND =>
+            {
+                Ok(None)
+            }
+            Err(error) => Err(Self::track_radio_error(error)),
+        }
+    }
+
+    /// Radio errors shown in the UI contain neither Rust variant names nor
+    /// server URLs/bodies. Those are not useful instructions for a listener.
+    fn track_radio_error(error: tidlers::error::TidalError) -> TidalError {
+        use tidlers::error::TidalError as ApiError;
+        use tidlers::requests::RequestClientError;
+        let message = match error {
+            ApiError::NotAuthenticated => return TidalError::NotAuthenticated,
+            ApiError::NotFound => "This radio mix is no longer available on TIDAL".to_string(),
+            ApiError::RequestClient(RequestClientError::StatusCode { status, .. }) => match status.as_u16() {
+                401 => "TIDAL refused the radio request (HTTP 401). Try again or sign in again".to_string(),
+                403 => "Track radio is not accessible on TIDAL (HTTP 403)".to_string(),
+                404 => "This radio mix is no longer available on TIDAL. Please try again".to_string(),
+                429 => "TIDAL's request limit was reached. Please try again shortly".to_string(),
+                500..=599 => "TIDAL is having trouble loading radio. Please try again shortly".to_string(),
+                other => format!("TIDAL could not load radio (HTTP {other})"),
+            },
+            ApiError::RequestClient(RequestClientError::Unauthorized) => {
+                "TIDAL refused the radio request (HTTP 401). Try again or sign in again".to_string()
+            }
+            ApiError::RequestClient(RequestClientError::Timeout) => {
+                "The track radio request timed out. Please try again".to_string()
+            }
+            ApiError::RequestClient(RequestClientError::RequestError(error)) | ApiError::Request(error) => {
+                if error.is_timeout() {
+                    "The track radio request timed out. Please try again".to_string()
+                } else {
+                    "Could not load track radio from TIDAL. Check your connection and try again".to_string()
+                }
+            }
+            _ => "TIDAL returned an unexpected track radio response. Please try again".to_string(),
+        };
+        TidalError::RequestFailed(message)
     }
 
     // =========================================================================
@@ -2865,6 +2914,54 @@ mod tests {
             let failure = classify_playback_error(&status_error(status, r#"{"subStatus":4005,"token":"private"}"#));
             assert!(matches!(failure, PlaybackFailure::Failed(_)));
             assert_eq!(failure.to_string(), format!("TIDAL playback request failed (HTTP {})", status.as_u16()));
+        }
+    }
+
+    #[test]
+    fn missing_track_radio_is_a_normal_absence() {
+        let missing = status_error(
+            reqwest::StatusCode::NOT_FOUND,
+            r#"{"status":404,"subStatus":2001,"userMessage":"TrackMixId for mixId: [459351692] not found"}"#,
+        );
+        assert!(TidalAppClient::track_radio_lookup::<()>(Err(missing)).unwrap().is_none());
+        assert!(TidalAppClient::track_radio_lookup::<()>(Err(tidlers::error::TidalError::NotFound)).unwrap().is_none());
+        assert_eq!(TidalAppClient::track_radio_lookup(Ok("mix-id")).unwrap(), Some("mix-id"));
+    }
+
+    #[test]
+    fn radio_auth_rate_limit_and_service_errors_remain_retryable() {
+        for status in [
+            reqwest::StatusCode::UNAUTHORIZED,
+            reqwest::StatusCode::FORBIDDEN,
+            reqwest::StatusCode::TOO_MANY_REQUESTS,
+            reqwest::StatusCode::INTERNAL_SERVER_ERROR,
+        ] {
+            let error = TidalAppClient::track_radio_lookup::<()>(Err(status_error(status, "private-body"))).unwrap_err();
+            let text = error.to_string();
+            assert!(!text.contains("private-body"));
+            assert!(!text.contains("do-not-log"));
+            assert!(!text.contains("StatusCode"));
+            assert!(!text.contains("RequestClient"));
+            assert!(text.contains("TIDAL"));
+        }
+    }
+
+    #[test]
+    fn a_missing_radio_items_page_remains_a_retryable_error() {
+        let error = TidalAppClient::track_radio_error(status_error(reqwest::StatusCode::NOT_FOUND, "private-body"));
+        assert_eq!(error.to_string(), "Request failed: This radio mix is no longer available on TIDAL. Please try again");
+    }
+
+    #[test]
+    fn malformed_and_timeout_radio_responses_do_not_claim_absence() {
+        for error in [
+            tidlers::error::TidalError::Other("private-body".into()),
+            tidlers::error::TidalError::RequestClient(tidlers::requests::RequestClientError::Timeout),
+            tidlers::error::TidalError::RequestClient(tidlers::requests::RequestClientError::Unauthorized),
+        ] {
+            let text = TidalAppClient::track_radio_lookup::<()>(Err(error)).unwrap_err().to_string();
+            assert!(!text.contains("private-body"));
+            assert!(!text.contains("RequestClient"));
         }
     }
 
