@@ -971,12 +971,13 @@ impl AppModel {
         }
     }
 
-    /// Drill into an Explore sub-page (genre/mood/decade): push the slug
-    /// onto the back stack and fetch it.
+    /// Open an Explore sub-page or retry the current page. Retrying preserves
+    /// the back stack; opening a different page adds its slug.
     pub fn handle_load_explore_page(&mut self, slug: String) -> Task<cosmic::Action<Message>> {
-        self.explore_stack.push(slug.clone());
-        self.explore_loading = true;
-        self.load_explore_page(&slug)
+        if self.explore_stack.last() != Some(&slug) {
+            self.explore_stack.push(slug.clone());
+        }
+        self.begin_explore_page_load(&slug)
     }
 
     /// Pop one level off the Explore back stack and reload the parent page.
@@ -984,12 +985,7 @@ impl AppModel {
         if self.explore_stack.len() > 1 {
             self.explore_stack.pop();
         }
-        if let Some(slug) = self.explore_stack.last().cloned() {
-            self.explore_loading = true;
-            self.load_explore_page(&slug)
-        } else {
-            Task::none()
-        }
+        if let Some(slug) = self.explore_stack.last().cloned() { self.begin_explore_page_load(&slug) } else { Task::none() }
     }
 
     /// Activate an Explore card/promo target.
@@ -1003,6 +999,23 @@ impl AppModel {
             ExploreTarget::Page(slug) => self.handle_load_explore_page(slug),
             ExploreTarget::None => Task::none(),
         }
+    }
+
+    /// Show a loading state without leaving the previous page's rows active.
+    pub(crate) fn begin_explore_page_load(&mut self, slug: &str) -> Task<cosmic::Action<Message>> {
+        self.explore_page = None;
+        self.rebuild_explore_rows();
+        self.explore_loading = true;
+        self.error_message = None;
+        self.load_explore_page(slug)
+    }
+
+    /// Replace the row set and its widget identity together. List layout and
+    /// scroll state belong to one page, while artwork redraws keep that state.
+    pub(crate) fn rebuild_explore_rows(&mut self) {
+        self.explore_rows = self.explore_page.as_ref().map(|page| page.into_rows().into_iter().collect()).unwrap_or_default();
+        self.explore_rows_revision = self.explore_rows_revision.wrapping_add(1);
+        tracing::debug!(revision = self.explore_rows_revision, rows = self.explore_rows.len(), "Rebuilt Explore list");
     }
 
     /// Handle an Explore page finishing loading: store it and preload covers.
@@ -1034,9 +1047,8 @@ impl AppModel {
                         ExploreSection::Links { .. } => {}
                     }
                 }
-                // Flatten into virtual-list rows for smooth scrolling.
-                self.explore_rows = page.into_rows().into_iter().collect();
                 self.explore_page = Some(page);
+                self.rebuild_explore_rows();
                 self.load_images_for_urls(urls)
             }
             Err(e) => {

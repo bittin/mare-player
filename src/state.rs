@@ -262,6 +262,9 @@ pub struct AppModel {
     /// Flattened rows of the current Explore page, rendered via the virtual
     /// `List` widget so long browse pages scroll smoothly.
     pub(crate) explore_rows: list::Content<ExploreRow>,
+    /// Widget identity for the current row set. Changes whenever rows are
+    /// replaced, so a new page cannot inherit another page's list offsets.
+    pub(crate) explore_rows_revision: u64,
     /// Whether an Explore page fetch is in flight.
     pub(crate) explore_loading: bool,
     /// Back-stack of Explore page slugs, so the in-view back button can

@@ -132,6 +132,7 @@ impl cosmic::Application for AppModel {
             artist_rows: cosmic::iced::widget::list::Content::default(),
             explore_page: None,
             explore_rows: cosmic::iced::widget::list::Content::default(),
+            explore_rows_revision: 0,
             explore_loading: false,
             explore_stack: Vec::new(),
             selected_mix_tracks: Vec::new(),
