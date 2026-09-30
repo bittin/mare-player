@@ -78,6 +78,9 @@ via the `panel-applet` feature flag (enabled by default).
 
 ## Installation
 
+The [COPR packaging guide](packaging/rpm/README.md) covers Fedora-native source
+RPMs, manual publishing, and opt-in publishing from the GitHub release workflow.
+
 ### Dependencies
 
 Install the required system libraries before building:

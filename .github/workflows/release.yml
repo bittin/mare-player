@@ -159,9 +159,12 @@ jobs:
             echo "release_name=${TAG}" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Download all artifacts
+      - name: Download release binary artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
+          # Reruns may also have copr-srpms-* artifacts. Download only the
+          # binary matrix outputs, not the extra source archives.
+          pattern: packages-*
           path: release
           merge-multiple: true
 
@@ -169,7 +172,7 @@ jobs:
         id: hashes
         run: |
           cd release
-          shasum -a 256 *.deb *.rpm *.tar.gz > SHA256SUMS
+          shasum -a 256 -- *.deb *.rpm *.tar.gz > SHA256SUMS
           # Expose base64(SHA256SUMS) for the SLSA provenance generator job.
           echo "hashes=$(base64 -w0 SHA256SUMS)" >> "$GITHUB_OUTPUT"
 
@@ -248,3 +251,86 @@ jobs:
       base64-subjects: ${{ needs.release.outputs.hashes }}
       upload-assets: true
       upload-tag-name: ${{ github.ref_name }}
+
+  # Keep this in the same workflow: a release created with GITHUB_TOKEN does
+  # not trigger another workflow listening for `release: published`.
+  copr:
+    name: Publish source RPMs to COPR
+    needs: [release, provenance]
+    if: github.repository == 'glima/mare-player' && startsWith(github.ref, 'refs/tags/v') && vars.COPR_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    # Fedora 44, pinned to the image used for the initial native RPM builds.
+    container:
+      image: registry.fedoraproject.org/fedora@sha256:a19ffd4eae9d5b993feda690cb7da7fa4f33ec6af1f0507a28e6a8fe67718389
+    defaults:
+      run:
+        shell: bash
+    concurrency:
+      group: copr-${{ github.ref }}
+      cancel-in-progress: false
+    env:
+      COPR_PROJECT: limachaves/mare-player
+
+    steps:
+      - name: Check publishing credential
+        env:
+          COPR_CONFIG: ${{ secrets.COPR_CONFIG }}
+        run: |
+          if [[ -z "$COPR_CONFIG" ]]; then
+            echo "::error::COPR_ENABLED is true, but the COPR_CONFIG Actions secret is missing."
+            exit 1
+          fi
+
+      - name: Install source-packaging tools
+        run: dnf install -y git cargo python3 python3-pyyaml rpm-build xz copr-cli desktop-file-utils ShellCheck
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Check packaging
+        run: |
+          python3 -B -m unittest discover -s packaging/rpm -p 'test_*.py'
+          shellcheck packaging/rpm/build-srpm.sh
+
+      - name: Prepare source RPMs from the release tag
+        run: |
+          if [[ ! "$GITHUB_REF" =~ ^refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::COPR publishing requires a stable vX.Y.Z release tag."
+            exit 1
+          fi
+          # Fail closed if someone moved the tag after this release started.
+          test "$(git rev-parse "${GITHUB_REF}^{commit}")" = "$(git rev-parse HEAD)"
+          bash packaging/rpm/build-srpm.sh "$GITHUB_REF" 1
+
+      - name: Retain source RPMs for inspection or manual recovery
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: copr-srpms-${{ github.ref_name }}-${{ github.run_attempt }}
+          path: target/srpm/*/*.src.rpm
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Submit both variants to COPR
+        env:
+          COPR_CONFIG: ${{ secrets.COPR_CONFIG }}
+        run: |
+          umask 077
+          config=$(mktemp "$RUNNER_TEMP/copr-config.XXXXXXXX")
+          trap 'rm -f -- "$config"' EXIT
+          printf '%s\n' "$COPR_CONFIG" > "$config"
+          unset COPR_CONFIG
+          # Do not retry automatically: a lost response may still have queued
+          # a build. Inspect COPR before resubmitting after a partial failure.
+          copr-cli --config "$config" build --nowait --enable-net off \
+            "$COPR_PROJECT" target/srpm/*/*.src.rpm
+          {
+            echo "### COPR source RPMs submitted"
+            echo "Both variants of $GITHUB_REF_NAME were submitted to [$COPR_PROJECT](https://copr.fedorainfracloud.org/coprs/$COPR_PROJECT/)."
+            echo "COPR builds asynchronously for all enabled project targets; this job confirms submission, not build success."
+          } >> "$GITHUB_STEP_SUMMARY"
