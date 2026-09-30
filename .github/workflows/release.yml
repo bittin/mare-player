@@ -259,22 +259,15 @@ jobs:
       - name: Install git-cliff
         uses: taiki-e/install-action@d8ae1fa96886bc82c05515b8ac15b41515da2c6d # git-cliff
 
-      - name: Generate release notes from commits
-        run: |
-          set -euo pipefail
-          # Grouping and the catch-all live in cliff.toml, so a commit type
-          # nobody thought about lands under "Other changes" instead of
-          # disappearing — which is how the GPL-3.0 relicense went missing from
-          # the v0.3.2 notes.
-          git-cliff --current --strip header --output RELEASE_NOTES.md
+      - name: Check release-note generation
+        run: python3 -B packaging/rpm/test_release_notes.py
 
-          TAG="${GITHUB_REF#refs/tags/}"
-          PREV=$(git describe --tags --abbrev=0 --match 'v[0-9]*' "${TAG}^" 2>/dev/null || true)
-          if [ -n "$PREV" ]; then
-            printf '\n**Full Changelog**: https://github.com/%s/compare/%s...%s\n' \
-              "$GITHUB_REPOSITORY" "$PREV" "$TAG" >> RELEASE_NOTES.md
-          fi
-          echo '----- generated release notes -----'
+      - name: Generate release notes from published releases
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python3 .github/scripts/release-notes.py \
+            --repository "$GITHUB_REPOSITORY" --tag "$GITHUB_REF_NAME" > RELEASE_NOTES.md
           cat RELEASE_NOTES.md
 
       - name: Create GitHub release

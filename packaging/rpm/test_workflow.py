@@ -135,6 +135,14 @@ class CoprWorkflowTests(unittest.TestCase):
                 for source in staged:
                     self.assertTrue(any(fnmatch.fnmatch(f"release/{source.name}", glob) for glob in patterns))
 
+    def test_release_notes_use_published_release_baseline(self):
+        step = next(step for step in RELEASE["steps"]
+                    if step.get("name") == "Generate release notes from published releases")
+        self.assertEqual(step["env"]["GH_TOKEN"], "${{ secrets.GITHUB_TOKEN }}")
+        self.assertIn("python3 .github/scripts/release-notes.py", step["run"])
+        self.assertIn('--repository "$GITHUB_REPOSITORY" --tag "$GITHUB_REF_NAME"', step["run"])
+        self.assertNotIn("--current", step["run"])
+
     def test_missing_credential_fails_before_upload(self):
         result = run(snippet("Check publishing credential"), ROOT, COPR_CONFIG="")
         self.assertNotEqual(result.returncode, 0)
