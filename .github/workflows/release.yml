@@ -127,10 +127,65 @@ jobs:
         with:
           name: packages-${{ matrix.variant }}-${{ matrix.target }}
           path: dist/*
+          overwrite: true
+
+  srpm:
+    name: Build source RPMs
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    # Fedora 44, pinned to the image used for the initial native RPM builds.
+    container:
+      image: registry.fedoraproject.org/fedora@sha256:a19ffd4eae9d5b993feda690cb7da7fa4f33ec6af1f0507a28e6a8fe67718389
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Install source-packaging tools
+        run: dnf install -y git cargo python3 python3-pyyaml rpm-build xz desktop-file-utils ShellCheck perl-Digest-SHA
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Check packaging
+        run: |
+          python3 -B -m unittest discover -s packaging/rpm -p 'test_*.py'
+          shellcheck packaging/rpm/build-srpm.sh
+
+      - name: Prepare source RPMs from the release tag
+        run: |
+          if [[ ! "$GITHUB_REF" =~ ^refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Source RPMs require a stable vX.Y.Z release tag."
+            exit 1
+          fi
+          # Fail closed if someone moved the tag after this release started.
+          test "$(git rev-parse "${GITHUB_REF}^{commit}")" = "$(git rev-parse HEAD)"
+          bash packaging/rpm/build-srpm.sh "$GITHUB_REF" 1
+
+      - name: Stage source RPMs
+        run: |
+          # Flatten the commit directory so the release's *.rpm globs include
+          # these files in assets, checksums, and both provenance attestations.
+          mkdir -p source-rpms
+          cp target/srpm/*/*.src.rpm source-rpms/
+
+      - name: Upload source RPMs
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: packages-srpm
+          path: source-rpms/*.src.rpm
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 14
 
   release:
     runs-on: ubuntu-latest
-    needs: build
+    needs: [build, srpm]
     permissions:
       contents: write
       id-token: write
@@ -159,11 +214,10 @@ jobs:
             echo "release_name=${TAG}" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Download release binary artifacts
+      - name: Download release artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          # Reruns may also have copr-srpms-* artifacts. Download only the
-          # binary matrix outputs, not the extra source archives.
+          # Publish both binary packages and the shared source-RPM artifact.
           pattern: packages-*
           path: release
           merge-multiple: true
@@ -284,37 +338,14 @@ jobs:
             exit 1
           fi
 
-      - name: Install source-packaging tools
-        run: dnf install -y git cargo python3 python3-pyyaml rpm-build xz copr-cli desktop-file-utils ShellCheck
+      - name: Install COPR client
+        run: dnf install -y copr-cli
 
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Download the published source RPMs
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          ref: ${{ github.sha }}
-          fetch-depth: 0
-          persist-credentials: false
-
-      - name: Check packaging
-        run: |
-          python3 -B -m unittest discover -s packaging/rpm -p 'test_*.py'
-          shellcheck packaging/rpm/build-srpm.sh
-
-      - name: Prepare source RPMs from the release tag
-        run: |
-          if [[ ! "$GITHUB_REF" =~ ^refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "::error::COPR publishing requires a stable vX.Y.Z release tag."
-            exit 1
-          fi
-          # Fail closed if someone moved the tag after this release started.
-          test "$(git rev-parse "${GITHUB_REF}^{commit}")" = "$(git rev-parse HEAD)"
-          bash packaging/rpm/build-srpm.sh "$GITHUB_REF" 1
-
-      - name: Retain source RPMs for inspection or manual recovery
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: copr-srpms-${{ github.ref_name }}-${{ github.run_attempt }}
-          path: target/srpm/*/*.src.rpm
-          if-no-files-found: error
-          retention-days: 14
+          name: packages-srpm
+          path: source-rpms
 
       - name: Submit both variants to COPR
         env:
@@ -328,7 +359,7 @@ jobs:
           # Do not retry automatically: a lost response may still have queued
           # a build. Inspect COPR before resubmitting after a partial failure.
           copr-cli --config "$config" build --nowait --enable-net off \
-            "$COPR_PROJECT" target/srpm/*/*.src.rpm
+            "$COPR_PROJECT" source-rpms/*.src.rpm
           {
             echo "### COPR source RPMs submitted"
             echo "Both variants of $GITHUB_REF_NAME were submitted to [$COPR_PROJECT](https://copr.fedorainfracloud.org/coprs/$COPR_PROJECT/)."

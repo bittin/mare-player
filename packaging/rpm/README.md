@@ -137,7 +137,7 @@ Only after that should the main installation documentation advertise an actual
 ## Packaging regression checks
 
 ```sh
-# Workflow tests also need PyYAML: sudo dnf install python3-pyyaml
+# Workflow test dependencies: sudo dnf install python3-pyyaml perl-Digest-SHA
 python3 -B -m unittest discover -s packaging/rpm -p 'test_*.py'
 shellcheck packaging/rpm/build-srpm.sh
 # If installed:
@@ -153,12 +153,12 @@ complement, not replace, the real SRPM/Mock/install tests above.
 
 ## Automatic GitHub release publishing
 
-The `copr` job in `.github/workflows/release.yml` runs **after the GitHub release
-and its SLSA provenance job succeed**. It uses the same source-RPM helper as the
-manual route, at the exact release commit, and submits both variants to
-`limachaves/mare-player` with networking disabled. COPR chooses the build targets
-from its project configuration; there is no second Fedora/architecture matrix
-to maintain in GitHub.
+The release workflow prepares both source RPMs once, from the exact release
+commit. They appear in GitHub's release assets alongside the binary packages,
+covered by `SHA256SUMS` and provenance attestations—even when COPR is disabled.
+After the release and provenance jobs succeed, the optional `copr` job submits
+those same files to `limachaves/mare-player` with networking disabled, using the
+build targets configured in COPR.
 
 It is part of the existing workflow, not a separate `release: published`
 workflow: GitHub does not trigger another workflow for a release created by
