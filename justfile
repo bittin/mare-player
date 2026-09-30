@@ -62,6 +62,10 @@ build-rpm: build-release
     strip -s {{ cargo-target-dir / 'release' / video-window-name }}
     cargo generate-rpm
 
+# Prepares both vendored source RPMs for COPR (does not compile or upload)
+build-srpm ref='HEAD' release='1':
+    bash packaging/rpm/build-srpm.sh {{ quote(ref) }} {{ quote(release) }}
+
 # Compiles standalone (no panel applet) with debug profile, renames binary
 # The standalone top-level window can use the GPU, so it keeps the `wgpu`
 # feature (the applet build omits it and renders on tiny_skia — see Cargo.toml).

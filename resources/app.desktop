@@ -6,7 +6,7 @@ Icon=io.github.cosmic-applet-mare
 Exec=cosmic-applet-mare %u
 Terminal=false
 StartupNotify=true
-Categories=COSMIC;Audio;Music;Player
+Categories=COSMIC;AudioVideo;Audio;Music;Player;
 # TIDAL redirects the PKCE sign-in to `tidal://login/auth?code=…`; claiming
 # the scheme is what lets the browser hand the code straight to the player.
 MimeType=x-scheme-handler/tidal;
