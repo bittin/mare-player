@@ -141,27 +141,91 @@ class CoprWorkflowTests(unittest.TestCase):
         self.assertIn("Actions secret is missing", result.stdout)
 
     def test_tag_and_commit_checks_before_preparing_sources(self):
-        for ref, tag_commit, succeeds in (
-            ("refs/heads/main", "event-commit", False),
-            ("refs/tags/v0.3.5-rc.1", "event-commit", False),
-            ("refs/tags/v0.3.5", "moved-tag", False),
-            ("refs/tags/v0.3.5", "event-commit", True),
+        for ref, tag_commit, git_exit, succeeds in (
+            ("refs/heads/main", "event-commit", 0, False),
+            ("refs/tags/v0.3.5-rc.1", "event-commit", 0, False),
+            ("refs/tags/v0.3.5", "moved-tag", 0, False),
+            ("refs/tags/v0.3.5", "event-commit", 0, True),
+            # Two failed substitutions must not compare equal as empty strings.
+            ("refs/tags/v0.3.5", "event-commit", 128, False),
         ):
-            with self.subTest(ref=ref, tag_commit=tag_commit), tempfile.TemporaryDirectory() as tmp:
+            with self.subTest(ref=ref, tag_commit=tag_commit, git_exit=git_exit), tempfile.TemporaryDirectory() as tmp:
                 root = Path(tmp)
                 (root / "bin").mkdir()
-                executable(root / "bin/git", '#!/bin/sh\nif [ "$2" = HEAD ]; then echo event-commit; else echo "$TAG_COMMIT"; fi\n')
+                executable(root / "bin/git", '#!/bin/sh\n[ "$GIT_EXIT" = 0 ] || exit "$GIT_EXIT"\ncase "$*" in *HEAD) echo event-commit;; *) echo "$TAG_COMMIT";; esac\n')
                 (root / "packaging/rpm").mkdir(parents=True)
                 (root / "packaging/rpm/build-srpm.sh").write_text('printf "%s\\n" "$@" > prepared-args\n')
                 result = run(
                     snippet("Prepare source RPMs from the release tag", SRPM), root,
                     PATH=f"{root / 'bin'}:{os.environ['PATH']}",
-                    GITHUB_REF=ref, TAG_COMMIT=tag_commit,
+                    GITHUB_REF=ref, TAG_COMMIT=tag_commit, GIT_EXIT=str(git_exit),
                 )
                 self.assertEqual(result.returncode == 0, succeeds, result.stderr)
                 self.assertEqual((root / "prepared-args").exists(), succeeds)
                 if succeeds:
                     self.assertEqual((root / "prepared-args").read_text().splitlines(), [ref, "1"])
+
+    def test_checkout_trust_precedes_git_operations(self):
+        steps = SRPM["steps"]
+        checkout = next(i for i, step in enumerate(steps)
+                        if step.get("uses", "").startswith("actions/checkout@"))
+        trust = next(i for i, step in enumerate(steps)
+                     if step.get("name") == "Trust the runner-owned checkout")
+        checks = next(i for i, step in enumerate(steps) if step.get("name") == "Check packaging")
+        prepare = next(i for i, step in enumerate(steps)
+                       if step.get("name") == "Prepare source RPMs from the release tag")
+        self.assertLess(checkout, trust)
+        self.assertLess(trust, checks)
+        self.assertLess(checks, prepare)
+        self.assertEqual(steps[trust]["run"].strip(),
+                         'git config --global --add safe.directory "$GITHUB_WORKSPACE"')
+
+    @unittest.skipUnless(hasattr(os, "geteuid") and os.geteuid() == 0,
+                         "ownership regression runs as root in the Fedora job container")
+    def test_real_git_accepts_only_the_runner_owned_workspace(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "home"
+            home.mkdir()
+            workspace = root / "runner owned checkout"
+            unrelated = root / "unrelated checkout"
+            env = {
+                **os.environ,
+                "HOME": str(home),
+                "GIT_CONFIG_GLOBAL": str(home / ".gitconfig"),
+                "GIT_CONFIG_SYSTEM": os.devnull,
+                "GIT_CONFIG_COUNT": "0",
+                "GIT_EDITOR": "true",
+                "SUDO_UID": "",
+                "LC_ALL": "C",
+                "GITHUB_WORKSPACE": str(workspace),
+            }
+            env.pop("GIT_CONFIG_PARAMETERS", None)
+            for repo in (workspace, unrelated):
+                subprocess.run(["git", "init", "--quiet", str(repo)], env=env, check=True,
+                               capture_output=True)
+                subprocess.run(["git", "-C", str(repo), "-c", "user.name=Fixture",
+                                "-c", "user.email=fixture@example.invalid", "-c", "commit.gpgsign=false",
+                                "commit", "--allow-empty", "-m", "fixture"], env=env, check=True,
+                               capture_output=True)
+                os.chown(repo, 4242, 4242)
+                os.chown(repo / ".git", 4242, 4242)
+            before = subprocess.run(["git", "-C", str(workspace), "rev-parse", "HEAD"],
+                                    env=env, capture_output=True, text=True)
+            self.assertNotEqual(before.returncode, 0)
+            self.assertIn("dubious ownership", before.stderr)
+
+            result = run(snippet("Trust the runner-owned checkout", SRPM), root, **env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            trusted = subprocess.check_output(["git", "config", "--global", "--get-all", "safe.directory"],
+                                              env=env, text=True).strip()
+            self.assertEqual(trusted, str(workspace))
+            subprocess.run(["git", "-C", str(workspace), "rev-parse", "HEAD"], env=env,
+                           check=True, capture_output=True)
+            other = subprocess.run(["git", "-C", str(unrelated), "rev-parse", "HEAD"],
+                                   env=env, capture_output=True, text=True)
+            self.assertNotEqual(other.returncode, 0)
+            self.assertIn("dubious ownership", other.stderr)
 
     def test_upload_uses_private_temporary_config_and_cleans_it_on_success_or_failure(self):
         for exit_code in (0, 1):
