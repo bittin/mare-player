@@ -23,6 +23,7 @@ use reqwest::header::AUTHORIZATION;
 use serde::Deserialize;
 use std::collections::HashSet;
 use std::sync::Arc;
+use tidlers::client::models::page::{PageModule, PageResponse};
 use tidlers::client::models::playback::{AssetPresentation, PlaybackMode, VideoQuality};
 use tidlers::client::models::track::config::TrackPlaybackInfoConfig;
 use tidlers::client::models::video::config::VideoPlaybackInfoConfig;
@@ -2302,113 +2303,63 @@ impl TidalAppClient {
     // Explore (TIDAL browse pages: /v1/pages/{path})
     // =========================================================================
 
-    /// Fetch and parse a TIDAL browse page.
+    /// Fetch a browse page through tidlers and convert its modules for the UI.
     ///
-    /// `path` is the page slug — `"explore"` for the root Explore view, or a
-    /// sub-page slug (genre/mood/decade) obtained from a [`PageLink`].  A
-    /// full `apiPath` like `pages/genre_hip_hop` is normalised to its slug.
-    ///
-    /// tidlers now exposes a pages API (`TidalClient::get_page`), but it
-    /// deserializes into a strict `PageResponse` whose `PageModule` makes
-    /// `description`, `width`, and `pagedList` non-optional — so one unexpected
-    /// module (e.g. a promo banner without a paged list) would fail the whole
-    /// page, unlike this defensive hand-built parse. So we keep mirroring the
-    /// official web client (`GET /v1/pages/{path}?deviceType=BROWSER&...`).
-    ///
-    /// TODO: adopt `client.get_page(slug)` once tidlers makes those page-module
-    /// fields optional (or otherwise degrades gracefully), dropping this
-    /// hand-rolled request + header spoofing + slug normalisation.
+    /// Accepts a bare slug (`"explore"`) or a page-link `apiPath`
+    /// (`"pages/genre_hip_hop"`). Request parameters, authentication and web
+    /// client headers are owned by tidlers.
     pub async fn get_explore_page(&self, path: &str) -> TidalResult<ExplorePage> {
         self.ensure_valid_token().await?;
-
-        let (access_token, country_code, locale) = {
-            let client_guard = self.client.lock().await;
-            let client = client_guard.as_ref().ok_or(TidalError::NotAuthenticated)?;
-            let token = client.session.auth.access_token.as_ref().ok_or(TidalError::NotAuthenticated)?.clone();
-            let cc = client.user_info.as_ref().map(|u| u.country_code.clone()).unwrap_or_else(|| "US".to_string());
-            let loc = client.session.locale.clone();
-            (token, cc, loc)
-        };
-
-        // Normalise `pages/foo` / `/v1/pages/foo` down to the bare slug.
-        let slug = path.trim_start_matches('/').trim_start_matches("v1/").trim_start_matches("pages/");
-
-        let url = format!(
-            "https://api.tidal.com/v1/pages/{slug}?countryCode={country_code}&locale={locale}&deviceType=BROWSER&platform=WEB"
-        );
+        let client_guard = self.client.lock().await;
+        let client = client_guard.as_ref().ok_or(TidalError::NotAuthenticated)?;
+        let slug = client.normalize_page_slug(path);
         debug!("Fetching explore page: {}", slug);
-
-        let http_client = reqwest::Client::new();
-        let response = http_client
-            .get(&url)
-            .header(AUTHORIZATION, format!("Bearer {}", access_token))
-            .header("x-tidal-client-version", "2026.1.5")
-            .header("User-Agent", "Mozilla/5.0 (X11; Linux x86_64; rv:150.0) Gecko/20100101 Firefox/150.0")
-            .send()
-            .await
-            .map_err(|e| TidalError::NetworkError(format!("explore request failed: {}", e)))?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            error!("Explore page '{}' failed: HTTP {} — {}", slug, status, body);
-            return Err(TidalError::RequestFailed(format!("HTTP {}", status)));
-        }
-
-        let body = response.text().await.map_err(|e| TidalError::NetworkError(format!("reading explore body: {}", e)))?;
-        let page: serde_json::Value =
-            serde_json::from_str(&body).map_err(|e| TidalError::ParseError(format!("parsing explore JSON: {}", e)))?;
+        let page = client.get_page(&slug).await.map_err(Self::explore_request_error)?;
+        drop(client_guard);
 
         let parsed = Self::parse_explore_page(&page);
         info!("Explore '{}': {} sections", slug, parsed.sections.len());
         Ok(parsed)
     }
 
-    /// Parse a `/v1/pages/{path}` JSON body into an [`ExplorePage`].
-    ///
-    /// Defensive throughout: unknown module types are skipped, missing
-    /// fields fall back to sensible defaults, so a partial/changed payload
-    /// degrades gracefully instead of erroring.
-    fn parse_explore_page(page: &serde_json::Value) -> ExplorePage {
-        let title = page.get("title").and_then(|v| v.as_str()).unwrap_or("Explore").to_string();
-
-        let mut sections: Vec<ExploreSection> = Vec::new();
-
-        let rows = page.get("rows").and_then(|v| v.as_array());
-        for row in rows.into_iter().flatten() {
-            let modules = row.get("modules").and_then(|v| v.as_array());
-            for module in modules.into_iter().flatten() {
-                if let Some(section) = Self::parse_explore_module(module) {
-                    sections.push(section);
-                }
+    /// Keep request URLs and response bodies out of the error banner and logs.
+    fn explore_request_error(error: tidlers::error::TidalError) -> TidalError {
+        use tidlers::error::TidalError as ApiError;
+        use tidlers::requests::RequestClientError;
+        match error {
+            ApiError::NotAuthenticated => TidalError::NotAuthenticated,
+            ApiError::RequestClient(RequestClientError::StatusCode { status, .. }) => {
+                TidalError::RequestFailed(format!("Explore request failed (HTTP {})", status.as_u16()))
             }
+            ApiError::RequestClient(RequestClientError::Unauthorized) => {
+                TidalError::RequestFailed("TIDAL refused the Explore request (HTTP 401)".into())
+            }
+            other if is_tidlers_network_error(&other) => {
+                TidalError::NetworkError("Could not reach TIDAL to load Explore. Please try again".into())
+            }
+            _ => TidalError::RequestFailed("Could not load the Explore page from TIDAL. Please try again".into()),
         }
+    }
 
-        ExplorePage { title, sections }
+    /// Convert a typed browse page, skipping unsupported or empty modules and
+    /// malformed individual items without discarding the usable sections.
+    fn parse_explore_page(page: &PageResponse) -> ExplorePage {
+        let sections = page.rows.iter().flat_map(|row| &row.modules).filter_map(Self::parse_explore_module).collect();
+        ExplorePage { title: page.title.clone(), sections }
     }
 
     /// Parse a single module into an [`ExploreSection`], or `None` if it is
     /// empty or an unsupported type (e.g. videos).
-    fn parse_explore_module(module: &serde_json::Value) -> Option<ExploreSection> {
-        let module_type = module.get("type").and_then(|v| v.as_str()).unwrap_or("");
-        let title = module.get("title").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    fn parse_explore_module(module: &PageModule) -> Option<ExploreSection> {
+        let title = module.title.clone().unwrap_or_default();
 
-        match module_type {
+        match module.page_type.as_str() {
             "FEATURED_PROMOTIONS" => {
-                let items: Vec<ExploreCard> = module
-                    .get("items")
-                    .and_then(|v| v.as_array())
-                    .map(|arr| arr.iter().filter_map(Self::parse_promo_card).collect())
-                    .unwrap_or_default();
+                let items: Vec<ExploreCard> = module.items.iter().flatten().filter_map(Self::parse_promo_card).collect();
                 (!items.is_empty()).then_some(ExploreSection::Featured { title, items })
             }
             "PAGE_LINKS" | "PAGE_LINKS_CLOUD" => {
-                let links: Vec<PageLink> = module
-                    .get("pagedList")
-                    .and_then(|v| v.get("items"))
-                    .and_then(|v| v.as_array())
-                    .map(|arr| arr.iter().filter_map(Self::parse_page_link).collect())
-                    .unwrap_or_default();
+                let links: Vec<PageLink> = Self::paged_items(module).iter().filter_map(Self::parse_page_link).collect();
                 (!links.is_empty()).then_some(ExploreSection::Links { title, links })
             }
             "ALBUM_LIST" => {
@@ -2428,8 +2379,8 @@ impl TidalAppClient {
         }
     }
 
-    fn paged_items(module: &serde_json::Value) -> Vec<serde_json::Value> {
-        module.get("pagedList").and_then(|v| v.get("items")).and_then(|v| v.as_array()).cloned().unwrap_or_default()
+    fn paged_items(module: &PageModule) -> &[serde_json::Value] {
+        module.paged_list.as_ref().and_then(|list| list.items.as_deref()).unwrap_or(&[])
     }
 
     /// Parse a FEATURED_PROMOTIONS item into a card with a nav target.
@@ -2880,6 +2831,138 @@ mod tests {
             url: "https://example.invalid/playback?token=do-not-log".to_string(),
             body_snippet: body.to_string(),
         })
+    }
+
+    mod explore_pages {
+        use super::super::{ExplorePage, ExploreSection, ExploreTarget, PageResponse, TidalAppClient};
+        use serde_json::{Value, json};
+
+        fn convert(modules: Vec<Value>) -> ExplorePage {
+            let page: PageResponse = serde_json::from_value(json!({
+                "id": "explore", "title": "Explore", "rows": [{"modules": modules}]
+            }))
+            .expect("tidlers should parse the page");
+            TidalAppClient::parse_explore_page(&page)
+        }
+
+        #[test]
+        fn sparse_featured_cards_keep_their_targets_and_artwork() {
+            let page = convert(vec![json!({
+                "type": "FEATURED_PROMOTIONS", "description": null, "width": null, "pagedList": null,
+                "items": [
+                    {"type": "ALBUM", "header": "Featured album", "artifactId": "123", "imageId": "ab-cd"},
+                    {"type": "PAGE", "shortHeader": "R&B / Soul", "artifactId": "pages/genre_rnb"},
+                    {"type": "EXTURL", "header": "Magazine", "artifactId": "https://example.invalid"},
+                    null
+                ]
+            })]);
+            assert_eq!(page.title, "Explore");
+            let [ExploreSection::Featured { title, items }] = page.sections.as_slice() else {
+                panic!("expected one Featured section");
+            };
+            assert!(title.is_empty());
+            assert_eq!(items.len(), 2);
+            assert!(matches!(&items[0].target, ExploreTarget::Album(id) if id == "123"));
+            assert!(items[0].image_url.is_some());
+            assert!(matches!(&items[1].target, ExploreTarget::Page(path) if path == "pages/genre_rnb"));
+        }
+
+        #[test]
+        fn mixed_page_keeps_links_albums_playlists_and_artists_in_order() {
+            let page = convert(vec![
+                json!({"type": "PAGE_LINKS_CLOUD", "title": "Genres", "pagedList": {"items": [
+                    {"title": "R&B / Soul", "apiPath": "pages/genre_rnb"}, {"title": "Missing path"}
+                ]}}),
+                json!({"type": "PAGE_LINKS", "pagedList": {"items": [
+                    {"text": "Moods", "path": "/v1/pages/moods"}
+                ]}}),
+                json!({"type": "FUTURE_BANNER", "payload": {"unknown": true}}),
+                json!({"type": "ALBUM_LIST", "title": "New Albums", "pagedList": {"items": [
+                    {"id": 123, "title": "Album", "artists": [{"id": 7, "name": "Artist"}],
+                     "mediaMetadata": {"tags": ["LOSSLESS", "HIRES_LOSSLESS"]}},
+                    {"id": 456}, null
+                ]}}),
+                json!({"type": "PLAYLIST_LIST", "title": "Essentials", "pagedList": {"items": [
+                    {"uuid": "playlist-id", "title": "Playlist", "numberOfTracks": 12}, {"title": "Missing id"}
+                ]}}),
+                json!({"type": "ARTIST_LIST", "pagedList": {"items": [
+                    {"id": "7", "name": "Artist"}, {"id": "8"}, false
+                ]}}),
+            ]);
+            let [
+                ExploreSection::Links { links: genres, .. },
+                ExploreSection::Links { links: moods, .. },
+                ExploreSection::Albums { albums, .. },
+                ExploreSection::Playlists { playlists, .. },
+                ExploreSection::Artists { artists, .. },
+            ] = page.sections.as_slice()
+            else {
+                panic!("expected five usable sections in source order");
+            };
+            assert_eq!(genres.len(), 1);
+            assert_eq!(genres[0].path, "pages/genre_rnb");
+            assert_eq!(moods[0].path, "/v1/pages/moods");
+            assert_eq!(albums.len(), 1);
+            assert_eq!(albums[0].id, "123");
+            assert_eq!(albums[0].artist_name, "Artist");
+            assert_eq!(albums[0].advertised_quality().as_deref(), Some("Hi-Res Lossless"));
+            assert_eq!(playlists.len(), 1);
+            assert_eq!(playlists[0].uuid, "playlist-id");
+            assert_eq!(playlists[0].num_tracks, 12);
+            assert_eq!(artists.len(), 1);
+            assert_eq!(artists[0].id, "7");
+        }
+
+        #[test]
+        fn missing_null_and_empty_collections_do_not_create_empty_sections() {
+            let page = convert(vec![
+                json!({"type": "FEATURED_PROMOTIONS"}),
+                json!({"type": "FEATURED_PROMOTIONS", "items": null}),
+                json!({"type": "ALBUM_LIST", "pagedList": null}),
+                json!({"type": "PLAYLIST_LIST", "pagedList": {"dataApiPath": "playlists"}}),
+                json!({"type": "ARTIST_LIST", "pagedList": {"items": null}}),
+                json!({"type": "PAGE_LINKS", "pagedList": {"items": []}}),
+            ]);
+            assert!(page.sections.is_empty());
+            assert!(convert(vec![]).sections.is_empty());
+        }
+
+        #[test]
+        fn each_module_reads_the_correct_item_collection() {
+            let page = convert(vec![
+                json!({"type": "FEATURED_PROMOTIONS", "items": [
+                    {"type": "ALBUM", "header": "Direct promo", "artifactId": "123"}
+                ], "pagedList": {"items": [{"type": "ALBUM", "header": "Wrong collection", "artifactId": "456"}]}}),
+                json!({"type": "ALBUM_LIST", "items": [{"id": 123, "title": "Wrong collection"}],
+                    "pagedList": {"items": [{"id": 456, "title": "Paged album"}]}}),
+            ]);
+            let [ExploreSection::Featured { items, .. }, ExploreSection::Albums { albums, .. }] = page.sections.as_slice() else {
+                panic!("expected promo and album sections");
+            };
+            assert_eq!(items[0].title, "Direct promo");
+            assert_eq!(albums[0].title, "Paged album");
+        }
+
+        #[test]
+        fn tidlers_normalizes_all_supported_page_link_forms() {
+            let client = tidlers::TidalClient::new(&tidlers::auth::TidalAuth::with_oauth());
+            for path in
+                ["genre_rnb", "/genre_rnb", "pages/genre_rnb", "/pages/genre_rnb", "v1/pages/genre_rnb", "/v1/pages/genre_rnb"]
+            {
+                assert_eq!(client.normalize_page_slug(path), "genre_rnb");
+            }
+            assert_eq!(client.normalize_page_slug("explore"), "explore");
+        }
+
+        #[test]
+        fn request_errors_do_not_expose_urls_bodies_or_rust_variants() {
+            let error = super::status_error(reqwest::StatusCode::INTERNAL_SERVER_ERROR, "private-body");
+            let message = TidalAppClient::explore_request_error(error).to_string();
+            assert!(message.contains("HTTP 500"));
+            assert!(!message.contains("private-body"));
+            assert!(!message.contains("do-not-log"));
+            assert!(!message.contains("RequestClient"));
+        }
     }
 
     #[test]

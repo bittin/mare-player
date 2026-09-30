@@ -255,7 +255,7 @@ src/
 | Crate | Purpose |
 |---|---|
 | [libcosmic](https://github.com/pop-os/libcosmic) | COSMIC application framework |
-| [tidlers](https://github.com/tomkoid/tidlers) | TIDAL API client |
+| [tidlers](https://codeberg.org/tomkoid/tidlers) | TIDAL API client |
 | [gstreamer-rs](https://gitlab.freedesktop.org/gstreamer/gstreamer-rs) | Playback engine for all audio and video (decode, stream, output, volume, seek, gapless) |
 | [rustfft](https://crates.io/crates/rustfft) | FFT for spectrum analysis |
 | [zbus](https://crates.io/crates/zbus) | D-Bus / MPRIS2 interface |
@@ -266,7 +266,7 @@ src/
 ## Acknowledgments
 
 - Built with [libcosmic](https://github.com/pop-os/libcosmic)
-- TIDAL API access via [tidlers](https://github.com/tomkoid/tidlers)
+- TIDAL API access via [tidlers](https://codeberg.org/tomkoid/tidlers)
 
 ## Contributing
 
