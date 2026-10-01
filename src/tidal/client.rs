@@ -23,6 +23,7 @@ use reqwest::header::AUTHORIZATION;
 use serde::Deserialize;
 use std::collections::HashSet;
 use std::sync::Arc;
+use tidlers::client::models::collection::track::CollectionFavoriteTracksResponse;
 use tidlers::client::models::page::{PageModule, PageResponse};
 use tidlers::client::models::playback::{AssetPresentation, PlaybackMode, VideoQuality};
 use tidlers::client::models::track::config::TrackPlaybackInfoConfig;
@@ -1133,58 +1134,45 @@ impl TidalAppClient {
         }
     }
 
-    /// Get user's favorite tracks (paginated — fetches all pages)
+    /// Get all favourite tracks through tidlers, preserving their server order.
+    /// `_limit` is not a cap on the collection; requests use 100-item pages.
     pub async fn get_user_favorite_tracks(&self, _limit: Option<u32>) -> TidalResult<Vec<Track>> {
         self.ensure_valid_token().await?;
-
-        let ctx = self.auth_context_with_user().await?;
-
         debug!("Getting user favorite tracks (paginated)");
+        Self::collect_favorite_tracks(|limit, offset| async move {
+            let client_guard = self.client.lock().await;
+            let client = client_guard.as_ref().ok_or(tidlers::error::TidalError::NotAuthenticated)?;
+            client.get_collection_track_favorites(Some(limit), Some(offset)).await
+        })
+        .await
+    }
 
-        let http_client = reqwest::Client::new();
-        let page_size: u32 = 100;
-        let mut offset: u32 = 0;
-        let mut all_tracks: Vec<Track> = Vec::new();
-
+    /// Walk the SDK's pages until exhausted. Offsets count returned entries,
+    /// not the requested page size, so short intermediate pages are not skipped.
+    async fn collect_favorite_tracks<F, Fut>(mut fetch_page: F) -> TidalResult<Vec<Track>>
+    where
+        F: FnMut(u32, u32) -> Fut,
+        Fut: std::future::Future<Output = Result<CollectionFavoriteTracksResponse, tidlers::error::TidalError>>,
+    {
+        let mut offset = 0u32;
+        let mut tracks = Vec::new();
         loop {
-            let url = format!(
-                "https://api.tidal.com/v1/users/{}/favorites/tracks?countryCode={}&limit={}&offset={}",
-                ctx.user_id, ctx.country_code, page_size, offset
-            );
-
-            let response = http_client
-                .get(&url)
-                .header(AUTHORIZATION, format!("Bearer {}", ctx.access_token))
-                .send()
-                .await
-                .map_err(|e| TidalError::NetworkError(format!("HTTP request failed: {}", e)))?;
-
-            if !response.status().is_success() {
-                let status = response.status();
-                let body = response.text().await.unwrap_or_default();
-                error!("Favorite tracks request failed: {} - {}", status, body);
-                return Err(TidalError::RequestFailed(format!("HTTP {}", status)));
+            let page = fetch_page(100, offset).await.map_err(|e| Self::request_error("Favorite tracks", e))?;
+            let total = u32::try_from(page.total_number_of_items)
+                .map_err(|_| TidalError::ParseError("Negative favorite-track total from TIDAL".into()))?;
+            if u32::try_from(page.offset).ok() != Some(offset) {
+                return Err(TidalError::ParseError("TIDAL returned the wrong favorite-track page offset".into()));
             }
-
-            let body = response.text().await.map_err(|e| TidalError::NetworkError(format!("reading favorites body: {}", e)))?;
-
-            let parsed: ApiPaginatedResponse<ApiItemWrapper<ApiTrackData>> =
-                serde_json::from_str(&body).map_err(|e| TidalError::ParseError(format!("favorite tracks JSON: {}", e)))?;
-
-            let total = parsed.total_number_of_items as u32;
-            let page_items = parsed.items.len() as u32;
-
-            all_tracks.extend(parsed.items.into_iter().filter_map(|w| w.item).map(Track::from));
-
-            offset += page_items;
-            info!("Fetched favorite tracks page: {} / {} total", all_tracks.len(), total);
-
-            if page_items == 0 || offset >= total {
-                break;
+            let count =
+                u32::try_from(page.items.len()).map_err(|_| TidalError::ParseError("Favorite-track page is too large".into()))?;
+            tracks.extend(page.items.into_iter().map(|entry| Track::from(entry.item)));
+            offset =
+                offset.checked_add(count).ok_or_else(|| TidalError::ParseError("Favorite-track pagination overflow".into()))?;
+            info!("Fetched favorite tracks page: {} / {} total", tracks.len(), total);
+            if count == 0 || offset >= total {
+                return Ok(tracks);
             }
         }
-
-        Ok(all_tracks)
     }
 
     /// Get user's favorite albums (paginated — fetches all pages)
@@ -2314,7 +2302,7 @@ impl TidalAppClient {
         let client = client_guard.as_ref().ok_or(TidalError::NotAuthenticated)?;
         let slug = client.normalize_page_slug(path);
         debug!("Fetching explore page: {}", slug);
-        let page = client.get_page(&slug).await.map_err(Self::explore_request_error)?;
+        let page = client.get_page(&slug).await.map_err(|e| Self::request_error("Explore", e))?;
         drop(client_guard);
 
         let parsed = Self::parse_explore_page(&page);
@@ -2323,21 +2311,21 @@ impl TidalAppClient {
     }
 
     /// Keep request URLs and response bodies out of the error banner and logs.
-    fn explore_request_error(error: tidlers::error::TidalError) -> TidalError {
+    fn request_error(context: &str, error: tidlers::error::TidalError) -> TidalError {
         use tidlers::error::TidalError as ApiError;
         use tidlers::requests::RequestClientError;
         match error {
             ApiError::NotAuthenticated => TidalError::NotAuthenticated,
             ApiError::RequestClient(RequestClientError::StatusCode { status, .. }) => {
-                TidalError::RequestFailed(format!("Explore request failed (HTTP {})", status.as_u16()))
+                TidalError::RequestFailed(format!("{context} request failed (HTTP {})", status.as_u16()))
             }
             ApiError::RequestClient(RequestClientError::Unauthorized) => {
-                TidalError::RequestFailed("TIDAL refused the Explore request (HTTP 401)".into())
+                TidalError::RequestFailed(format!("TIDAL refused the {context} request (HTTP 401)"))
             }
             other if is_tidlers_network_error(&other) => {
-                TidalError::NetworkError("Could not reach TIDAL to load Explore. Please try again".into())
+                TidalError::NetworkError(format!("Could not reach TIDAL to load {context}. Please try again"))
             }
-            _ => TidalError::RequestFailed("Could not load the Explore page from TIDAL. Please try again".into()),
+            _ => TidalError::RequestFailed(format!("Could not load {context} from TIDAL. Please try again")),
         }
     }
 
@@ -2833,6 +2821,137 @@ mod tests {
         })
     }
 
+    mod favorite_tracks {
+        use super::super::{CollectionFavoriteTracksResponse, TidalAppClient};
+        use std::future::ready;
+
+        fn page(offset: i32, total: i32, ids: std::ops::Range<u64>) -> CollectionFavoriteTracksResponse {
+            let items: Vec<_> = ids
+                .map(|id| {
+                    serde_json::json!({
+                        "created": "2026-01-01T00:00:00Z",
+                        "item": {
+                            "id": id, "title": format!("Track {id}"), "duration": 123,
+                            "replayGain": -3.0, "peak": 0.9, "allowStreaming": true,
+                            "streamReady": true, "payToStream": false, "adSupportedStreamReady": false,
+                            "djReady": false, "stemReady": false, "premiumStreamingOnly": false,
+                            "trackNumber": 7, "volumeNumber": 1, "popularity": 1,
+                            "url": "https://example.invalid/track", "editable": false,
+                            "explicit": true, "audioQuality": "LOSSLESS", "audioModes": ["STEREO"],
+                            "upload": false, "artist": {"id": 9, "name": "Artist"}, "artists": [],
+                            "album": {"id": 99, "title": "Album", "cover": "aa-bb"}
+                        }
+                    })
+                })
+                .collect();
+            serde_json::from_value(serde_json::json!({
+                "items": items, "offset": offset, "limit": 100, "totalNumberOfItems": total
+            }))
+            .expect("SDK favourites fixture should deserialize")
+        }
+
+        #[tokio::test]
+        async fn loads_all_pages_in_order_and_preserves_track_metadata() {
+            let mut calls = Vec::new();
+            let tracks = TidalAppClient::collect_favorite_tracks(|limit, offset| {
+                calls.push((limit, offset));
+                ready(Ok(match offset {
+                    0 => page(0, 205, 0..100),
+                    100 => page(100, 205, 100..200),
+                    200 => page(200, 205, 200..205),
+                    _ => panic!("unexpected offset {offset}"),
+                }))
+            })
+            .await
+            .unwrap();
+            assert_eq!(calls, [(100, 0), (100, 100), (100, 200)]);
+            assert_eq!(tracks.len(), 205);
+            assert!(tracks.iter().enumerate().all(|(i, track)| track.id == i.to_string()));
+            let track = &tracks[0];
+            assert_eq!(track.title, "Track 0");
+            assert_eq!(track.artist_name, "Artist");
+            assert_eq!(track.artist_id.as_deref(), Some("9"));
+            assert_eq!(track.album_name.as_deref(), Some("Album"));
+            assert_eq!(track.album_id.as_deref(), Some("99"));
+            assert_eq!(track.cover_url.as_deref(), Some("https://resources.tidal.com/images/aa/bb/320x320.jpg"));
+            assert_eq!(track.duration, 123);
+            assert_eq!(track.track_number, 7);
+            assert!(track.explicit);
+            assert_eq!(track.audio_quality.as_deref(), Some("LOSSLESS"));
+            assert!(!track.is_video);
+        }
+
+        #[tokio::test]
+        async fn short_pages_advance_by_returned_count_not_requested_limit() {
+            let mut offsets = Vec::new();
+            let tracks = TidalAppClient::collect_favorite_tracks(|_, offset| {
+                offsets.push(offset);
+                ready(Ok(match offset {
+                    0 => page(0, 3, 0..2),
+                    2 => page(2, 3, 2..3),
+                    _ => panic!("unexpected offset {offset}"),
+                }))
+            })
+            .await
+            .unwrap();
+            assert_eq!(offsets, [0, 2]);
+            assert_eq!(tracks.len(), 3);
+        }
+
+        #[tokio::test]
+        async fn an_empty_page_stops_even_when_the_reported_total_is_stale() {
+            for total in [0, 100] {
+                let mut calls = 0;
+                let tracks = TidalAppClient::collect_favorite_tracks(|_, offset| {
+                    calls += 1;
+                    assert_eq!(offset, 0);
+                    ready(Ok(page(0, total, 0..0)))
+                })
+                .await
+                .unwrap();
+                assert_eq!(calls, 1);
+                assert!(tracks.is_empty());
+            }
+        }
+
+        #[tokio::test]
+        async fn a_later_page_failure_does_not_return_a_partial_collection() {
+            let mut offsets = Vec::new();
+            let result = TidalAppClient::collect_favorite_tracks(|_, offset| {
+                offsets.push(offset);
+                ready(if offset == 0 {
+                    Ok(page(0, 101, 0..100))
+                } else {
+                    Err(tidlers::error::TidalError::Other("private upstream detail".into()))
+                })
+            })
+            .await;
+            assert_eq!(offsets, [0, 100]);
+            let error = result.unwrap_err().to_string();
+            assert!(error.contains("Favorite tracks"));
+            assert!(!error.contains("private upstream detail"));
+        }
+
+        #[tokio::test]
+        async fn wrong_offsets_and_negative_totals_fail_explicitly() {
+            // A server that ignores offset repeats the first page.
+            let result = TidalAppClient::collect_favorite_tracks(|_, _| ready(Ok(page(0, 101, 0..100)))).await;
+            assert!(result.unwrap_err().to_string().contains("wrong favorite-track page offset"));
+            let result = TidalAppClient::collect_favorite_tracks(|_, _| ready(Ok(page(0, -1, 0..0)))).await;
+            assert!(result.unwrap_err().to_string().contains("Negative favorite-track total"));
+        }
+
+        #[tokio::test]
+        async fn a_track_without_an_album_still_converts() {
+            let mut response = page(0, 1, 1..2);
+            response.items[0].item.album = None;
+            let mut response = Some(response);
+            let tracks = TidalAppClient::collect_favorite_tracks(|_, _| ready(Ok(response.take().unwrap()))).await.unwrap();
+            assert!(tracks[0].album_id.is_none());
+            assert!(tracks[0].cover_url.is_none());
+        }
+    }
+
     mod explore_pages {
         use super::super::{ExplorePage, ExploreSection, ExploreTarget, PageResponse, TidalAppClient};
         use serde_json::{Value, json};
@@ -2957,7 +3076,7 @@ mod tests {
         #[test]
         fn request_errors_do_not_expose_urls_bodies_or_rust_variants() {
             let error = super::status_error(reqwest::StatusCode::INTERNAL_SERVER_ERROR, "private-body");
-            let message = TidalAppClient::explore_request_error(error).to_string();
+            let message = TidalAppClient::request_error("Explore", error).to_string();
             assert!(message.contains("HTTP 500"));
             assert!(!message.contains("private-body"));
             assert!(!message.contains("do-not-log"));
