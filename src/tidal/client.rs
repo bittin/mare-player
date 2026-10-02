@@ -1555,74 +1555,39 @@ impl TidalAppClient {
     // Track Lyrics
     // =========================================================================
 
-    /// Fetch lyrics for a track from TIDAL.
+    /// Fetch lyrics through tidlers' authenticated v1 endpoint.
     ///
-    /// Hits the TIDAL v1 API endpoint `GET /v1/tracks/{id}/lyrics` directly
-    /// (tidlers' v2/OpenAPI lyrics surface needs a different OAuth flow
-    /// than mare's internal client; this v1 path works with the access
-    /// token we already hold).
-    ///
-    /// The endpoint returns plain `lyrics` and LRC-format `subtitles`
-    /// in parallel; we surface both via [`TrackLyrics`].  A `404`
-    /// (TIDAL has no lyrics for this track) is mapped to an empty
-    /// `TrackLyrics`, not an error — the UI distinguishes "loading·
-    /// vs no-lyrics·vs error" by inspecting the result.
+    /// Plain lyrics and timed subtitles are independent representations. A
+    /// missing lyrics resource is an empty result; authentication, transport
+    /// and malformed-response failures remain errors.
     pub async fn get_track_lyrics(&self, track_id: &str) -> TidalResult<TrackLyrics> {
-        let ctx = self.auth_context().await?;
-
-        let url = format!("https://api.tidal.com/v1/tracks/{}/lyrics?countryCode={}", track_id, ctx.country_code);
-
+        self.ensure_valid_token().await?;
         debug!("Fetching lyrics for track {}", track_id);
-
-        let http_client = reqwest::Client::new();
-        let response = http_client
-            .get(&url)
-            .header(AUTHORIZATION, format!("Bearer {}", ctx.access_token))
-            .send()
-            .await
-            .map_err(|e| TidalError::NetworkError(format!("{:?}", e)))?;
-
-        // 404 / 401 with empty lyrics: "no lyrics available" for this
-        // track.  Not an error — just an empty result.
-        if response.status() == reqwest::StatusCode::NOT_FOUND {
-            debug!("No lyrics found for track {}", track_id);
-            return Ok(TrackLyrics::default());
-        }
-
-        if !response.status().is_success() {
-            return Err(TidalError::RequestFailed(format!("HTTP {} fetching lyrics for track {}", response.status(), track_id)));
-        }
-
-        #[derive(Deserialize)]
-        #[serde(rename_all = "camelCase")]
-        struct LyricsResponse {
-            #[serde(default)]
-            lyrics: Option<String>,
-            #[serde(default)]
-            subtitles: Option<String>,
-            #[serde(default)]
-            lyrics_provider: Option<String>,
-            #[serde(default)]
-            is_right_to_left: bool,
-        }
-
-        let raw: LyricsResponse = response.json().await.map_err(|e| TidalError::ParseError(format!("{:?}", e)))?;
-
-        let plain_text = raw.lyrics.and_then(|s| {
-            let trimmed = s.trim();
-            if trimmed.is_empty() { None } else { Some(s) }
-        });
-        let lrc_lines = raw.subtitles.as_deref().map(crate::tidal::models::parse_lrc).unwrap_or_default();
-
+        let result = {
+            let client_guard = self.client.lock().await;
+            let client = client_guard.as_ref().ok_or(TidalError::NotAuthenticated)?;
+            client.get_track_lyrics(track_id).await
+        };
+        let lyrics = Self::lyrics_from_response(result)?;
         info!(
             "Loaded lyrics for track {}: provider={:?} plain={} synced_lines={}",
             track_id,
-            raw.lyrics_provider,
-            plain_text.is_some(),
-            lrc_lines.len()
+            lyrics.provider,
+            lyrics.plain_text.is_some(),
+            lyrics.lrc_lines.len()
         );
+        Ok(lyrics)
+    }
 
-        Ok(TrackLyrics { provider: raw.lyrics_provider, plain_text, lrc_lines, is_right_to_left: raw.is_right_to_left })
+    /// Preserve the no-lyrics/404 contract without masking other failures.
+    fn lyrics_from_response(
+        result: Result<tidlers::client::models::track::LyricsResponse, tidlers::error::TidalError>,
+    ) -> TidalResult<TrackLyrics> {
+        match result {
+            Ok(response) => Ok(TrackLyrics::from(response)),
+            Err(tidlers::error::TidalError::NotFound) => Ok(TrackLyrics::default()),
+            Err(error) => Err(Self::request_error("Lyrics", error)),
+        }
     }
 
     // =========================================================================
@@ -2716,6 +2681,127 @@ mod tests {
             url: "https://example.invalid/playback?token=do-not-log".to_string(),
             body_snippet: body.to_string(),
         })
+    }
+
+    mod lyrics {
+        use super::super::{TidalAppClient, TidalError, TrackLyrics};
+        use serde_json::{Value, json};
+        use tidlers::client::models::track::LyricsResponse;
+
+        fn convert(value: Value) -> TrackLyrics {
+            let response: LyricsResponse = serde_json::from_value(value).expect("SDK lyrics fixture should deserialize");
+            TidalAppClient::lyrics_from_response(Ok(response)).expect("lyrics should convert")
+        }
+
+        #[test]
+        fn complete_response_preserves_text_attribution_and_timing() {
+            let text = "  First line\nSecond line  ";
+            let lyrics = convert(json!({
+                "trackId": 1, "lyricsProvider": "Provider", "providerCommontrackId": "common",
+                "providerLyricsId": "lyrics", "lyrics": text,
+                "subtitles": "[00:05.67]Second line\n[00:01.23]First line", "isRightToLeft": false
+            }));
+            assert_eq!(lyrics.provider.as_deref(), Some("Provider"));
+            assert_eq!(lyrics.plain_text.as_deref(), Some(text));
+            assert!(!lyrics.is_right_to_left);
+            assert!(!lyrics.is_empty());
+            assert!(lyrics.is_synced());
+            assert_eq!(lyrics.lrc_lines.len(), 2);
+            assert_eq!(lyrics.lrc_lines[0].time_ms, 1230);
+            assert_eq!(lyrics.lrc_lines[0].text, "First line");
+            assert_eq!(lyrics.lrc_lines[1].time_ms, 5670);
+            assert_eq!(lyrics.line_index_at(1.229), None);
+            assert_eq!(lyrics.line_index_at(1.230), Some(0));
+            assert_eq!(lyrics.line_index_at(5.670), Some(1));
+        }
+
+        #[test]
+        fn subtitles_only_response_keeps_synced_lyrics_without_provider_metadata() {
+            let lyrics = convert(json!({
+                "trackId": 1, "subtitles": "[00:02.00][00:04.00]Chorus"
+            }));
+            assert!(lyrics.plain_text.is_none());
+            assert!(lyrics.provider.is_none());
+            assert!(lyrics.is_synced());
+            assert!(!lyrics.is_empty());
+            assert!(!lyrics.is_right_to_left);
+            assert_eq!(lyrics.lrc_lines.iter().map(|line| line.time_ms).collect::<Vec<_>>(), [2000, 4000]);
+        }
+
+        #[test]
+        fn missing_null_and_blank_plain_text_remain_empty_without_subtitles() {
+            for payload in [
+                json!({"trackId": 1}),
+                json!({"trackId": 1, "lyrics": null, "lyricsProvider": null,
+                    "providerCommontrackId": null, "providerLyricsId": null, "subtitles": null}),
+                json!({"trackId": 1, "lyrics": "", "subtitles": ""}),
+                json!({"trackId": 1, "lyrics": " \t\n ", "subtitles": " "}),
+            ] {
+                let lyrics = convert(payload);
+                assert!(lyrics.plain_text.is_none());
+                assert!(lyrics.is_empty());
+                assert!(!lyrics.is_synced());
+            }
+        }
+
+        #[test]
+        fn plain_only_rtl_text_and_original_line_breaks_are_preserved() {
+            let text = "  مرحباً\nبالعالم  ";
+            let lyrics = convert(json!({"trackId": 1, "lyrics": text, "isRightToLeft": true}));
+            assert_eq!(lyrics.plain_text.as_deref(), Some(text));
+            assert!(lyrics.is_right_to_left);
+            assert!(!lyrics.is_empty());
+            assert!(!lyrics.is_synced());
+        }
+
+        #[test]
+        fn malformed_lrc_does_not_discard_usable_plain_text() {
+            let lyrics = convert(json!({"trackId": 1, "lyrics": "Plain words", "subtitles": "[not-a-time]ignore me"}));
+            assert_eq!(lyrics.plain_text.as_deref(), Some("Plain words"));
+            assert!(!lyrics.is_synced());
+            assert!(!lyrics.is_empty());
+        }
+
+        #[test]
+        fn sdk_not_found_is_a_normal_empty_result() {
+            let lyrics = TidalAppClient::lyrics_from_response(Err(tidlers::error::TidalError::NotFound)).unwrap();
+            assert!(lyrics.is_empty());
+            assert!(lyrics.provider.is_none());
+            assert!(!lyrics.is_right_to_left);
+        }
+
+        #[test]
+        fn auth_rate_limit_and_service_errors_are_not_cached_as_missing_lyrics() {
+            for status in [
+                reqwest::StatusCode::UNAUTHORIZED,
+                reqwest::StatusCode::FORBIDDEN,
+                reqwest::StatusCode::TOO_MANY_REQUESTS,
+                reqwest::StatusCode::SERVICE_UNAVAILABLE,
+            ] {
+                let message = TidalAppClient::lyrics_from_response(Err(super::status_error(status, "private upstream detail")))
+                    .unwrap_err()
+                    .to_string();
+                assert!(message.contains("Lyrics"));
+                assert!(message.contains(&format!("HTTP {}", status.as_u16())));
+                assert!(!message.contains("private upstream detail"));
+                assert!(!message.contains("do-not-log"));
+                assert!(!message.contains("StatusCode"));
+            }
+            assert!(matches!(
+                TidalAppClient::lyrics_from_response(Err(tidlers::error::TidalError::NotAuthenticated)),
+                Err(TidalError::NotAuthenticated)
+            ));
+            let timeout = tidlers::error::TidalError::RequestClient(tidlers::requests::RequestClientError::Timeout);
+            assert!(TidalAppClient::lyrics_from_response(Err(timeout)).is_err());
+        }
+
+        #[test]
+        fn malformed_response_remains_an_error() {
+            for payload in [json!({"status": 500}), json!({"trackId": 1, "lyrics": ["wrong type"]})] {
+                let error = serde_json::from_value::<LyricsResponse>(payload).unwrap_err();
+                assert!(TidalAppClient::lyrics_from_response(Err(tidlers::error::TidalError::JsonParse(error))).is_err());
+            }
+        }
     }
 
     mod favorite_albums {

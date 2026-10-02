@@ -780,6 +780,20 @@ pub struct TrackLyrics {
     pub is_right_to_left: bool,
 }
 
+/// Convert SDK lyrics without conflating absent plain text with absent lyrics.
+/// Timed subtitles remain useful on their own; nonempty plain text keeps its
+/// original whitespace and line breaks.
+impl From<tidlers::client::models::track::LyricsResponse> for TrackLyrics {
+    fn from(lyrics: tidlers::client::models::track::LyricsResponse) -> Self {
+        Self {
+            provider: lyrics.lyrics_provider,
+            plain_text: lyrics.lyrics.filter(|text| !text.trim().is_empty()),
+            lrc_lines: lyrics.subtitles.as_deref().map(parse_lrc).unwrap_or_default(),
+            is_right_to_left: lyrics.right_to_left,
+        }
+    }
+}
+
 impl TrackLyrics {
     /// True when TIDAL returned neither plain nor synced lyrics.
     pub fn is_empty(&self) -> bool {
