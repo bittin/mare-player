@@ -192,6 +192,30 @@ impl Album {
     }
 }
 
+/// Convert an SDK album summary, retaining optional collection metadata.
+impl From<tidlers::client::models::album::Album> for Album {
+    fn from(a: tidlers::client::models::album::Album) -> Self {
+        let (artist_name, artist_id) = a
+            .artist
+            .map(|artist| (artist.name, Some(artist.id.to_string())))
+            .unwrap_or_else(|| ("Unknown Artist".to_string(), None));
+        Self {
+            id: a.id.to_string(),
+            title: a.title,
+            artist_name,
+            artist_id,
+            num_tracks: a.number_of_tracks.unwrap_or(0),
+            duration: a.duration.unwrap_or(0) as u32,
+            release_date: a.release_date,
+            cover_url: a.cover.as_deref().map(tidal_cover_url),
+            explicit: a.explicit.unwrap_or(false),
+            audio_quality: a.audio_quality,
+            quality_tags: a.media_metadata.map(|metadata| metadata.tags).unwrap_or_default(),
+            review: None,
+        }
+    }
+}
+
 /// Convert from tidlers AlbumResponse type (full album info)
 impl From<tidlers::client::models::album::AlbumResponse> for Album {
     fn from(a: tidlers::client::models::album::AlbumResponse) -> Self {
