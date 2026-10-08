@@ -275,9 +275,7 @@ impl AppModel {
         self.nav_stack.clear();
         self.view_state = ViewState::Explore;
         self.explore_stack = vec!["explore".to_string()];
-        self.explore_page = None;
-        self.explore_loading = true;
-        self.load_explore_page("explore")
+        self.begin_explore_page_load("explore")
     }
 
     // =========================================================================
@@ -317,9 +315,12 @@ impl AppModel {
         self.selected_radio_source_track = Some(track.clone());
         self.selected_radio_tracks.clear();
         self.selected_radio_mix_id = None;
-        self.is_loading = true;
+        self.set_track_list(Vec::new());
+        self.track_radio_request_version = self.track_radio_request_version.wrapping_add(1);
+        self.track_radio_loading = !track.is_video && !self.unavailable_radio_tracks.contains(&track.id);
+        self.error_message = None;
         self.view_state = ViewState::TrackRadio;
-        self.load_track_radio(track.id)
+        if self.track_radio_loading { self.load_track_radio(track.id) } else { Task::none() }
     }
 
     /// Handle show lyrics view for a specific track.
@@ -650,10 +651,7 @@ impl AppModel {
             ViewState::Profiles => self.rebuild_profiles_content(),
             ViewState::Feed => self.rebuild_feed_content(),
             ViewState::TrackDetail => self.rebuild_track_detail_rows(),
-            ViewState::Explore => {
-                self.explore_rows =
-                    self.explore_page.as_ref().map(|page| page.into_rows().into_iter().collect()).unwrap_or_default();
-            }
+            ViewState::Explore => self.rebuild_explore_rows(),
             _ => {}
         }
     }

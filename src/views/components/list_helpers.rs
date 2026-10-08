@@ -17,6 +17,8 @@ use cosmic::widget::{self, button, container, text};
 use cosmic::widget::button::Catalog;
 
 use crate::messages::Message;
+use crate::state::AppModel;
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use crate::tidal::models::Track;
@@ -35,7 +37,8 @@ const MAX_PANEL_TEXT_WIDTH: f32 = 300.0;
 
 /// Options for rendering a track row via [`AppModel::track_row`](crate::state::AppModel::track_row).
 ///
-/// Use [`Default::default()`] for sensible defaults, then override as needed.
+/// Views should start from [`AppModel::track_row_options`] to include learned
+/// radio availability, then override the playback context and styling as needed.
 pub struct TrackRowOptions {
     /// The full track list for queue context when clicked.
     pub tracks: Arc<[Track]>,
@@ -48,11 +51,20 @@ pub struct TrackRowOptions {
     /// Whether to show the "Go to track radio" button. Default `true`.
     /// Set to `false` in the track radio view to prevent recursive radios.
     pub show_radio_button: bool,
+    /// Track IDs for which TIDAL has confirmed no radio mix exists.
+    /// Shared with the model; absence means unknown/available, not unavailable.
+    pub unavailable_radio_tracks: Arc<HashSet<String>>,
 }
 
 impl Default for TrackRowOptions {
     fn default() -> Self {
-        Self { tracks: Arc::from([]), source: None, fallback_icon: "audio-x-generic-symbolic", show_radio_button: true }
+        Self {
+            tracks: Arc::from([]),
+            source: None,
+            fallback_icon: "audio-x-generic-symbolic",
+            show_radio_button: true,
+            unavailable_radio_tracks: Arc::default(),
+        }
     }
 }
 
@@ -70,6 +82,14 @@ impl TrackRowOptions {
         let colons = max_str.chars().filter(|c| *c == ':').count();
 
         digits as f32 * 6.0 + colons as f32 * 3.0 + 1.0
+    }
+}
+
+impl AppModel {
+    /// Default row options with this session's learned radio availability.
+    /// An Arc clone lets virtual-list closures share the same set cheaply.
+    pub(crate) fn track_row_options(&self) -> TrackRowOptions {
+        TrackRowOptions { unavailable_radio_tracks: Arc::clone(&self.unavailable_radio_tracks), ..Default::default() }
     }
 }
 

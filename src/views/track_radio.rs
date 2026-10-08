@@ -59,7 +59,7 @@ impl AppModel {
             .spacing(8)
             .align_y(cosmic::iced::Alignment::Center);
 
-        let tracks_content: Element<'_, Message> = if self.is_loading {
+        let tracks_content: Element<'_, Message> = if self.track_radio_loading {
             text(fl!("loading-radio-tracks")).size(14).into()
         } else if self.selected_radio_tracks.is_empty() {
             text(fl!("no-radio-tracks")).size(14).into()
@@ -69,7 +69,7 @@ impl AppModel {
                 tracks: Arc::clone(&self.track_list_arc),
                 source: Some(radio_source),
                 show_radio_button: false,
-                ..Default::default()
+                ..self.track_row_options()
             };
 
             let track_list = cosmic::iced::widget::list::List::new(&self.track_list_content, move |index, track| {

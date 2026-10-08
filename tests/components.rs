@@ -100,6 +100,12 @@ mod track_row_options_default {
     }
 
     #[test]
+    fn default_radio_unavailability_is_empty() {
+        let opts = TrackRowOptions::default();
+        assert!(opts.unavailable_radio_tracks.is_empty());
+    }
+
+    #[test]
     fn default_source_is_none() {
         let opts = TrackRowOptions::default();
         assert!(opts.source.is_none());

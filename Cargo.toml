@@ -1,6 +1,6 @@
 [package]
 name = "cosmic-applet-mare"
-version = "0.3.4"
+version = "0.3.6"
 edition = "2024"
 license = "GPL-3.0-only"
 authors = ["Maré Player authors"]
@@ -47,8 +47,8 @@ i18n-embed-fl = "0.10"
 rust-embed = "8.7.2"
 tokio = { version = "1.48.0", features = ["sync", "time", "fs", "process", "rt", "macros", "io-util"] }
 
-# TIDAL API client
-tidlers = { git = "https://github.com/tomkoid/tidlers.git" }
+# TIDAL API client (canonical upstream repository)
+tidlers = { git = "https://codeberg.org/tomkoid/tidlers.git" }
 
 # Secure credential storage
 keyring = { version = "3", features = ["sync-secret-service"] }
@@ -83,7 +83,7 @@ rustfft = "6.4.1"
 # view-state cache and the image cache. Songs stay on the filesystem; videos
 # are never cached. `default-features = false` drops the bundled mimalloc
 # global allocator and the FTS extension, neither of which the cache needs.
-turso = { version = "0.7.0", default-features = false }
+turso = { version = "0.8.1", default-features = false }
 
 # GStreamer — the playback engine for all audio tracks and music videos
 # (decoding, streaming, output, volume/replay-gain, seeking, gapless). Audio

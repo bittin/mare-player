@@ -91,7 +91,7 @@ impl AppModel {
                 tracks: Arc::clone(&self.track_list_arc),
                 source: Some(crate::tidal::models::PlaybackSource::ad_hoc(fl!("context-history"))),
                 fallback_icon: "document-open-recent-symbolic",
-                ..Default::default()
+                ..self.track_row_options()
             };
 
             let track_list = cosmic::iced::widget::list::List::new(&self.track_list_content, move |index, track| {

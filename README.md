@@ -78,6 +78,34 @@ via the `panel-applet` feature flag (enabled by default).
 
 ## Installation
 
+### Fedora / Fedora-derived systems (COPR)
+
+The [COPR repository](https://copr.fedorainfracloud.org/coprs/limachaves/mare-player/)
+currently offers Fedora 44/45 packages for x86_64 and aarch64. Compatible
+Fedora-derived systems must use the same Fedora package base and architecture;
+these instructions are for DNF-managed systems, not immutable editions.
+
+If `dnf copr` is unavailable, install `dnf5-plugins` first (`dnf-plugins-core`
+for DNF4).
+
+Enable the repository and install the **standalone app**:
+
+```sh
+sudo dnf copr enable limachaves/mare-player
+sudo dnf install mare-player
+```
+
+For the **COSMIC panel applet**, install `cosmic-applet-mare` instead:
+
+```sh
+sudo dnf install cosmic-applet-mare
+```
+
+Choose only one variant: the packages conflict and cannot be installed together.
+Updates arrive through normal system updates (`sudo dnf upgrade`). See
+[Playback codecs](#playback-codecs-runtime) for additional runtime codecs.
+For source packaging and release automation, see the [maintainer guide](packaging/rpm/README.md).
+
 ### Dependencies
 
 Install the required system libraries before building:
@@ -255,7 +283,7 @@ src/
 | Crate | Purpose |
 |---|---|
 | [libcosmic](https://github.com/pop-os/libcosmic) | COSMIC application framework |
-| [tidlers](https://github.com/tomkoid/tidlers) | TIDAL API client |
+| [tidlers](https://codeberg.org/tomkoid/tidlers) | TIDAL API client |
 | [gstreamer-rs](https://gitlab.freedesktop.org/gstreamer/gstreamer-rs) | Playback engine for all audio and video (decode, stream, output, volume, seek, gapless) |
 | [rustfft](https://crates.io/crates/rustfft) | FFT for spectrum analysis |
 | [zbus](https://crates.io/crates/zbus) | D-Bus / MPRIS2 interface |
@@ -266,7 +294,7 @@ src/
 ## Acknowledgments
 
 - Built with [libcosmic](https://github.com/pop-os/libcosmic)
-- TIDAL API access via [tidlers](https://github.com/tomkoid/tidlers)
+- TIDAL API access via [tidlers](https://codeberg.org/tomkoid/tidlers)
 
 ## Contributing
 

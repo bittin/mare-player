@@ -23,6 +23,9 @@ use reqwest::header::AUTHORIZATION;
 use serde::Deserialize;
 use std::collections::HashSet;
 use std::sync::Arc;
+use tidlers::client::models::collection::album::CollectionFavoriteAlbumsResponse;
+use tidlers::client::models::collection::track::CollectionFavoriteTracksResponse;
+use tidlers::client::models::page::{PageModule, PageResponse};
 use tidlers::client::models::playback::{AssetPresentation, PlaybackMode, VideoQuality};
 use tidlers::client::models::track::config::TrackPlaybackInfoConfig;
 use tidlers::client::models::video::config::VideoPlaybackInfoConfig;
@@ -153,7 +156,29 @@ impl std::fmt::Display for PlaybackUrl {
 struct ApiPaginatedResponse<T> {
     items: Vec<T>,
     #[serde(default)]
+    offset: i32,
+    #[serde(default)]
     total_number_of_items: i32,
+}
+
+impl From<CollectionFavoriteTracksResponse> for ApiPaginatedResponse<Track> {
+    fn from(page: CollectionFavoriteTracksResponse) -> Self {
+        Self {
+            items: page.items.into_iter().map(|entry| Track::from(entry.item)).collect(),
+            offset: page.offset,
+            total_number_of_items: page.total_number_of_items,
+        }
+    }
+}
+
+impl From<CollectionFavoriteAlbumsResponse> for ApiPaginatedResponse<Album> {
+    fn from(page: CollectionFavoriteAlbumsResponse) -> Self {
+        Self {
+            items: page.items.into_iter().map(|entry| Album::from(entry.item)).collect(),
+            offset: page.offset,
+            total_number_of_items: page.total_number_of_items,
+        }
+    }
 }
 
 /// Wrapper for endpoints that nest the real payload under `"item"`.
@@ -245,57 +270,7 @@ impl From<ApiTrackData> for Track {
     }
 }
 
-/// Lenient album data — used for favorite albums responses.
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct ApiAlbumData {
-    id: u64,
-    title: String,
-    duration: u64,
-    number_of_tracks: u32,
-    release_date: Option<String>,
-    cover: String,
-    explicit: bool,
-    audio_quality: Option<String>,
-    /// The tiers TIDAL advertises, which `audio_quality` above does not
-    /// reliably describe. Absent from some responses.
-    media_metadata: Option<ApiMediaMetadata>,
-    artist: ApiAlbumArtist,
-}
-
-#[derive(Debug, Deserialize)]
-struct ApiMediaMetadata {
-    #[serde(default)]
-    tags: Vec<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct ApiAlbumArtist {
-    id: u64,
-    name: String,
-}
-
-/// Convert an `ApiAlbumData` into our domain `Album`.
-impl From<ApiAlbumData> for Album {
-    fn from(a: ApiAlbumData) -> Self {
-        Album {
-            id: a.id.to_string(),
-            title: a.title,
-            artist_name: a.artist.name,
-            artist_id: Some(a.artist.id.to_string()),
-            num_tracks: a.number_of_tracks,
-            duration: a.duration as u32,
-            release_date: a.release_date,
-            cover_url: Some(tidal_cover_url(&a.cover)),
-            explicit: a.explicit,
-            audio_quality: a.audio_quality,
-            quality_tags: a.media_metadata.map(|m| m.tags).unwrap_or_default(),
-            review: None,
-        }
-    }
-}
-
-// ── Credential helpers returned by auth_context* ────────────────────────
+// ── Credentials for endpoints requiring direct requests ─────────────────
 
 /// Access token + country code (no user ID needed).
 struct AuthTokenContext {
@@ -303,14 +278,71 @@ struct AuthTokenContext {
     country_code: String,
 }
 
-/// Access token + country code + user ID.
-struct AuthUserContext {
-    user_id: u64,
-    access_token: String,
-    country_code: String,
+pub type TidalResult<T> = Result<T, TidalError>;
+
+/// A playback-resolution failure. Only confirmed unavailable assets may be
+/// skipped automatically; authentication and transport failures stop playback.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PlaybackFailure {
+    /// TIDAL reports `subStatus: 4005` (asset not ready for playback).
+    Unavailable,
+    /// The server returned 401 without a usable application error code.
+    Rejected,
+    /// Anything else, with the message to show.
+    Failed(String),
 }
 
-pub type TidalResult<T> = Result<T, TidalError>;
+impl std::fmt::Display for PlaybackFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PlaybackFailure::Unavailable => write!(f, "This item is not available for playback on TIDAL"),
+            PlaybackFailure::Rejected => {
+                write!(f, "TIDAL refused playback (HTTP 401). The item may be unavailable, or your session may need renewing")
+            }
+            PlaybackFailure::Failed(msg) => write!(f, "{msg}"),
+        }
+    }
+}
+
+/// Interpret a playbackinfo error without inferring availability from HTTP
+/// status alone. TIDAL uses 401 for both authentication and asset failures;
+/// local token-expiry bookkeeping cannot distinguish them.
+pub(crate) fn classify_playback_error(error: &tidlers::error::TidalError) -> PlaybackFailure {
+    use tidlers::error::TidalError as ApiError;
+    use tidlers::requests::RequestClientError;
+
+    match error {
+        ApiError::RequestClient(RequestClientError::Unauthorized) => PlaybackFailure::Rejected,
+        ApiError::RequestClient(RequestClientError::StatusCode { status, body_snippet, .. }) => {
+            #[derive(Deserialize)]
+            struct ApiPlaybackError {
+                #[serde(rename = "subStatus")]
+                sub_status: u32,
+            }
+            if *status == reqwest::StatusCode::UNAUTHORIZED {
+                if serde_json::from_str::<ApiPlaybackError>(body_snippet).is_ok_and(|body| body.sub_status == 4005) {
+                    PlaybackFailure::Unavailable
+                } else {
+                    PlaybackFailure::Rejected
+                }
+            } else {
+                // StatusCode's Display includes the request URL and body, which
+                // can contain credentials. Neither belongs in the UI or journal.
+                PlaybackFailure::Failed(format!("TIDAL playback request failed (HTTP {})", status.as_u16()))
+            }
+        }
+        other => PlaybackFailure::Failed(other.to_string()),
+    }
+}
+
+impl From<TidalError> for PlaybackFailure {
+    fn from(error: TidalError) -> Self {
+        match error {
+            TidalError::Playback(failure) => failure,
+            other => Self::Failed(other.to_string()),
+        }
+    }
+}
 
 /// Errors that can occur during TIDAL operations
 #[derive(Debug, Clone)]
@@ -329,6 +361,8 @@ pub enum TidalError {
     NetworkError(String),
     /// Credential storage error
     CredentialError(String),
+    /// A track or video could not be played. See [`PlaybackFailure`].
+    Playback(PlaybackFailure),
 }
 
 impl std::fmt::Display for TidalError {
@@ -341,6 +375,7 @@ impl std::fmt::Display for TidalError {
             TidalError::SessionExpired => write!(f, "Session expired"),
             TidalError::NetworkError(msg) => write!(f, "Network error: {}", msg),
             TidalError::CredentialError(msg) => write!(f, "Credential error: {}", msg),
+            TidalError::Playback(failure) => write!(f, "{failure}"),
         }
     }
 }
@@ -447,32 +482,6 @@ impl TidalAppClient {
         let country_code = client.user_info.as_ref().map(|u| u.country_code.clone()).unwrap_or_else(|| "US".to_string());
 
         Ok(AuthTokenContext { access_token, country_code })
-    }
-
-    /// Extract access token + country code + user ID from the authenticated client.
-    async fn auth_context_with_user(&self) -> TidalResult<AuthUserContext> {
-        let client_guard = self.client.lock().await;
-        let client = client_guard.as_ref().ok_or(TidalError::NotAuthenticated)?;
-
-        let user_id = client.session.auth.user_id.ok_or_else(|| {
-            error!("No user ID available");
-            TidalError::NotAuthenticated
-        })?;
-
-        let access_token = client
-            .session
-            .auth
-            .access_token
-            .as_ref()
-            .ok_or_else(|| {
-                error!("No access token available");
-                TidalError::NotAuthenticated
-            })?
-            .clone();
-
-        let country_code = client.user_info.as_ref().map(|u| u.country_code.clone()).unwrap_or_else(|| "US".to_string());
-
-        Ok(AuthUserContext { user_id, access_token, country_code })
     }
 
     /// Add `resource_id` to the user's favorites via tidlers.
@@ -1065,113 +1074,57 @@ impl TidalAppClient {
         }
     }
 
-    /// Get user's favorite tracks (paginated — fetches all pages)
+    /// Get all favourite tracks through tidlers, preserving their server order.
+    /// `_limit` is not a cap on the collection; requests use 100-item pages.
     pub async fn get_user_favorite_tracks(&self, _limit: Option<u32>) -> TidalResult<Vec<Track>> {
         self.ensure_valid_token().await?;
-
-        let ctx = self.auth_context_with_user().await?;
-
         debug!("Getting user favorite tracks (paginated)");
-
-        let http_client = reqwest::Client::new();
-        let page_size: u32 = 100;
-        let mut offset: u32 = 0;
-        let mut all_tracks: Vec<Track> = Vec::new();
-
-        loop {
-            let url = format!(
-                "https://api.tidal.com/v1/users/{}/favorites/tracks?countryCode={}&limit={}&offset={}",
-                ctx.user_id, ctx.country_code, page_size, offset
-            );
-
-            let response = http_client
-                .get(&url)
-                .header(AUTHORIZATION, format!("Bearer {}", ctx.access_token))
-                .send()
-                .await
-                .map_err(|e| TidalError::NetworkError(format!("HTTP request failed: {}", e)))?;
-
-            if !response.status().is_success() {
-                let status = response.status();
-                let body = response.text().await.unwrap_or_default();
-                error!("Favorite tracks request failed: {} - {}", status, body);
-                return Err(TidalError::RequestFailed(format!("HTTP {}", status)));
-            }
-
-            let body = response.text().await.map_err(|e| TidalError::NetworkError(format!("reading favorites body: {}", e)))?;
-
-            let parsed: ApiPaginatedResponse<ApiItemWrapper<ApiTrackData>> =
-                serde_json::from_str(&body).map_err(|e| TidalError::ParseError(format!("favorite tracks JSON: {}", e)))?;
-
-            let total = parsed.total_number_of_items as u32;
-            let page_items = parsed.items.len() as u32;
-
-            all_tracks.extend(parsed.items.into_iter().filter_map(|w| w.item).map(Track::from));
-
-            offset += page_items;
-            info!("Fetched favorite tracks page: {} / {} total", all_tracks.len(), total);
-
-            if page_items == 0 || offset >= total {
-                break;
-            }
-        }
-
-        Ok(all_tracks)
+        Self::collect_favorites("Favorite tracks", |limit, offset| async move {
+            let client_guard = self.client.lock().await;
+            let client = client_guard.as_ref().ok_or(tidlers::error::TidalError::NotAuthenticated)?;
+            client.get_collection_track_favorites(Some(limit), Some(offset)).await.map(ApiPaginatedResponse::from)
+        })
+        .await
     }
 
-    /// Get user's favorite albums (paginated — fetches all pages)
-    pub async fn get_user_favorite_albums(&self, _limit: Option<u32>) -> TidalResult<Vec<Album>> {
-        self.ensure_valid_token().await?;
-
-        let ctx = self.auth_context_with_user().await?;
-
-        debug!("Getting user favorite albums (paginated)");
-
-        let http_client = reqwest::Client::new();
-        let page_size: u32 = 100;
-        let mut offset: u32 = 0;
-        let mut all_albums: Vec<Album> = Vec::new();
-
+    /// Walk the SDK's pages until exhausted. Offsets count returned entries,
+    /// not the requested page size, so short intermediate pages are not skipped.
+    async fn collect_favorites<T, F, Fut>(context: &str, mut fetch_page: F) -> TidalResult<Vec<T>>
+    where
+        F: FnMut(u32, u32) -> Fut,
+        Fut: std::future::Future<Output = Result<ApiPaginatedResponse<T>, tidlers::error::TidalError>>,
+    {
+        let mut offset = 0u32;
+        let mut items = Vec::new();
         loop {
-            let url = format!(
-                "https://api.tidal.com/v1/users/{}/favorites/albums?countryCode={}&limit={}&offset={}",
-                ctx.user_id, ctx.country_code, page_size, offset
-            );
-
-            let response = http_client
-                .get(&url)
-                .header(AUTHORIZATION, format!("Bearer {}", ctx.access_token))
-                .send()
-                .await
-                .map_err(|e| TidalError::NetworkError(format!("HTTP request failed: {}", e)))?;
-
-            if !response.status().is_success() {
-                let status = response.status();
-                let body = response.text().await.unwrap_or_default();
-                error!("Favorite albums request failed: {} - {}", status, body);
-                return Err(TidalError::RequestFailed(format!("HTTP {}", status)));
+            let page = fetch_page(100, offset).await.map_err(|e| Self::request_error(context, e))?;
+            let total = u32::try_from(page.total_number_of_items)
+                .map_err(|_| TidalError::ParseError(format!("{context} returned a negative total")))?;
+            if u32::try_from(page.offset).ok() != Some(offset) {
+                return Err(TidalError::ParseError(format!("{context} returned an unexpected page offset")));
             }
-
-            let body =
-                response.text().await.map_err(|e| TidalError::NetworkError(format!("reading favorite albums body: {}", e)))?;
-
-            let parsed: ApiPaginatedResponse<ApiItemWrapper<ApiAlbumData>> =
-                serde_json::from_str(&body).map_err(|e| TidalError::ParseError(format!("favorite albums JSON: {}", e)))?;
-
-            let total = parsed.total_number_of_items as u32;
-            let page_items = parsed.items.len() as u32;
-
-            all_albums.extend(parsed.items.into_iter().filter_map(|w| w.item).map(Album::from));
-
-            offset += page_items;
-            info!("Fetched favorite albums page: {} / {} total", all_albums.len(), total);
-
-            if page_items == 0 || offset >= total {
-                break;
+            let count =
+                u32::try_from(page.items.len()).map_err(|_| TidalError::ParseError(format!("{context} page is too large")))?;
+            items.extend(page.items);
+            offset = offset.checked_add(count).ok_or_else(|| TidalError::ParseError(format!("{context} pagination overflow")))?;
+            info!("Fetched {context} page: {} / {} total", items.len(), total);
+            if count == 0 || offset >= total {
+                return Ok(items);
             }
         }
+    }
 
-        Ok(all_albums)
+    /// Get all favourite albums through tidlers without per-album detail requests.
+    /// `_limit` is not a cap on the collection; requests use 100-item pages.
+    pub async fn get_user_favorite_albums(&self, _limit: Option<u32>) -> TidalResult<Vec<Album>> {
+        self.ensure_valid_token().await?;
+        debug!("Getting user favorite albums (paginated)");
+        Self::collect_favorites("Favorite albums", |limit, offset| async move {
+            let client_guard = self.client.lock().await;
+            let client = client_guard.as_ref().ok_or(tidlers::error::TidalError::NotAuthenticated)?;
+            client.get_collection_album_favorites(Some(limit), Some(offset)).await.map(ApiPaginatedResponse::from)
+        })
+        .await
     }
 
     /// Get playlist items (tracks).
@@ -1194,7 +1147,7 @@ impl TidalAppClient {
         self.ensure_valid_token().await?;
         debug!("Getting playlist tracks for: {}", playlist_uuid);
 
-        let ctx = self.auth_context_with_user().await?;
+        let ctx = self.auth_context().await?;
         let http_client = reqwest::Client::new();
         let page_size: u32 = limit.unwrap_or(100).min(100);
         let mut offset: u32 = 0;
@@ -1272,7 +1225,7 @@ impl TidalAppClient {
         let info = client
             .get_video_postpaywall_playback_info(video_id, Some(config))
             .await
-            .map_err(|e| TidalError::RequestFailed(format!("video playback info: {e:?}")))?;
+            .map_err(|e| TidalError::Playback(classify_playback_error(&e)))?;
 
         info.manifest
             .and_then(|manifest| manifest.urls.into_iter().next())
@@ -1343,7 +1296,7 @@ impl TidalAppClient {
         let info = client
             .get_track_postpaywall_playback_info(track_id, Some(config))
             .await
-            .map_err(|e| TidalError::RequestFailed(format!("playback info: {e:?}")))?;
+            .map_err(|e| TidalError::Playback(classify_playback_error(&e)))?;
 
         // What TIDAL *actually served*, which is not necessarily what we asked
         // for — the backend answers an out-of-reach tier with a lower one
@@ -1602,74 +1555,39 @@ impl TidalAppClient {
     // Track Lyrics
     // =========================================================================
 
-    /// Fetch lyrics for a track from TIDAL.
+    /// Fetch lyrics through tidlers' authenticated v1 endpoint.
     ///
-    /// Hits the TIDAL v1 API endpoint `GET /v1/tracks/{id}/lyrics` directly
-    /// (tidlers' v2/OpenAPI lyrics surface needs a different OAuth flow
-    /// than mare's internal client; this v1 path works with the access
-    /// token we already hold).
-    ///
-    /// The endpoint returns plain `lyrics` and LRC-format `subtitles`
-    /// in parallel; we surface both via [`TrackLyrics`].  A `404`
-    /// (TIDAL has no lyrics for this track) is mapped to an empty
-    /// `TrackLyrics`, not an error — the UI distinguishes "loading·
-    /// vs no-lyrics·vs error" by inspecting the result.
+    /// Plain lyrics and timed subtitles are independent representations. A
+    /// missing lyrics resource is an empty result; authentication, transport
+    /// and malformed-response failures remain errors.
     pub async fn get_track_lyrics(&self, track_id: &str) -> TidalResult<TrackLyrics> {
-        let ctx = self.auth_context().await?;
-
-        let url = format!("https://api.tidal.com/v1/tracks/{}/lyrics?countryCode={}", track_id, ctx.country_code);
-
+        self.ensure_valid_token().await?;
         debug!("Fetching lyrics for track {}", track_id);
-
-        let http_client = reqwest::Client::new();
-        let response = http_client
-            .get(&url)
-            .header(AUTHORIZATION, format!("Bearer {}", ctx.access_token))
-            .send()
-            .await
-            .map_err(|e| TidalError::NetworkError(format!("{:?}", e)))?;
-
-        // 404 / 401 with empty lyrics: "no lyrics available" for this
-        // track.  Not an error — just an empty result.
-        if response.status() == reqwest::StatusCode::NOT_FOUND {
-            debug!("No lyrics found for track {}", track_id);
-            return Ok(TrackLyrics::default());
-        }
-
-        if !response.status().is_success() {
-            return Err(TidalError::RequestFailed(format!("HTTP {} fetching lyrics for track {}", response.status(), track_id)));
-        }
-
-        #[derive(Deserialize)]
-        #[serde(rename_all = "camelCase")]
-        struct LyricsResponse {
-            #[serde(default)]
-            lyrics: Option<String>,
-            #[serde(default)]
-            subtitles: Option<String>,
-            #[serde(default)]
-            lyrics_provider: Option<String>,
-            #[serde(default)]
-            is_right_to_left: bool,
-        }
-
-        let raw: LyricsResponse = response.json().await.map_err(|e| TidalError::ParseError(format!("{:?}", e)))?;
-
-        let plain_text = raw.lyrics.and_then(|s| {
-            let trimmed = s.trim();
-            if trimmed.is_empty() { None } else { Some(s) }
-        });
-        let lrc_lines = raw.subtitles.as_deref().map(crate::tidal::models::parse_lrc).unwrap_or_default();
-
+        let result = {
+            let client_guard = self.client.lock().await;
+            let client = client_guard.as_ref().ok_or(TidalError::NotAuthenticated)?;
+            client.get_track_lyrics(track_id).await
+        };
+        let lyrics = Self::lyrics_from_response(result)?;
         info!(
             "Loaded lyrics for track {}: provider={:?} plain={} synced_lines={}",
             track_id,
-            raw.lyrics_provider,
-            plain_text.is_some(),
-            lrc_lines.len()
+            lyrics.provider,
+            lyrics.plain_text.is_some(),
+            lyrics.lrc_lines.len()
         );
+        Ok(lyrics)
+    }
 
-        Ok(TrackLyrics { provider: raw.lyrics_provider, plain_text, lrc_lines, is_right_to_left: raw.is_right_to_left })
+    /// Preserve the no-lyrics/404 contract without masking other failures.
+    fn lyrics_from_response(
+        result: Result<tidlers::client::models::track::LyricsResponse, tidlers::error::TidalError>,
+    ) -> TidalResult<TrackLyrics> {
+        match result {
+            Ok(response) => Ok(TrackLyrics::from(response)),
+            Err(tidlers::error::TidalError::NotFound) => Ok(TrackLyrics::default()),
+            Err(error) => Err(Self::request_error("Lyrics", error)),
+        }
     }
 
     // =========================================================================
@@ -2235,113 +2153,63 @@ impl TidalAppClient {
     // Explore (TIDAL browse pages: /v1/pages/{path})
     // =========================================================================
 
-    /// Fetch and parse a TIDAL browse page.
+    /// Fetch a browse page through tidlers and convert its modules for the UI.
     ///
-    /// `path` is the page slug — `"explore"` for the root Explore view, or a
-    /// sub-page slug (genre/mood/decade) obtained from a [`PageLink`].  A
-    /// full `apiPath` like `pages/genre_hip_hop` is normalised to its slug.
-    ///
-    /// tidlers now exposes a pages API (`TidalClient::get_page`), but it
-    /// deserializes into a strict `PageResponse` whose `PageModule` makes
-    /// `description`, `width`, and `pagedList` non-optional — so one unexpected
-    /// module (e.g. a promo banner without a paged list) would fail the whole
-    /// page, unlike this defensive hand-built parse. So we keep mirroring the
-    /// official web client (`GET /v1/pages/{path}?deviceType=BROWSER&...`).
-    ///
-    /// TODO: adopt `client.get_page(slug)` once tidlers makes those page-module
-    /// fields optional (or otherwise degrades gracefully), dropping this
-    /// hand-rolled request + header spoofing + slug normalisation.
+    /// Accepts a bare slug (`"explore"`) or a page-link `apiPath`
+    /// (`"pages/genre_hip_hop"`). Request parameters, authentication and web
+    /// client headers are owned by tidlers.
     pub async fn get_explore_page(&self, path: &str) -> TidalResult<ExplorePage> {
         self.ensure_valid_token().await?;
-
-        let (access_token, country_code, locale) = {
-            let client_guard = self.client.lock().await;
-            let client = client_guard.as_ref().ok_or(TidalError::NotAuthenticated)?;
-            let token = client.session.auth.access_token.as_ref().ok_or(TidalError::NotAuthenticated)?.clone();
-            let cc = client.user_info.as_ref().map(|u| u.country_code.clone()).unwrap_or_else(|| "US".to_string());
-            let loc = client.session.locale.clone();
-            (token, cc, loc)
-        };
-
-        // Normalise `pages/foo` / `/v1/pages/foo` down to the bare slug.
-        let slug = path.trim_start_matches('/').trim_start_matches("v1/").trim_start_matches("pages/");
-
-        let url = format!(
-            "https://api.tidal.com/v1/pages/{slug}?countryCode={country_code}&locale={locale}&deviceType=BROWSER&platform=WEB"
-        );
+        let client_guard = self.client.lock().await;
+        let client = client_guard.as_ref().ok_or(TidalError::NotAuthenticated)?;
+        let slug = client.normalize_page_slug(path);
         debug!("Fetching explore page: {}", slug);
-
-        let http_client = reqwest::Client::new();
-        let response = http_client
-            .get(&url)
-            .header(AUTHORIZATION, format!("Bearer {}", access_token))
-            .header("x-tidal-client-version", "2026.1.5")
-            .header("User-Agent", "Mozilla/5.0 (X11; Linux x86_64; rv:150.0) Gecko/20100101 Firefox/150.0")
-            .send()
-            .await
-            .map_err(|e| TidalError::NetworkError(format!("explore request failed: {}", e)))?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            error!("Explore page '{}' failed: HTTP {} — {}", slug, status, body);
-            return Err(TidalError::RequestFailed(format!("HTTP {}", status)));
-        }
-
-        let body = response.text().await.map_err(|e| TidalError::NetworkError(format!("reading explore body: {}", e)))?;
-        let page: serde_json::Value =
-            serde_json::from_str(&body).map_err(|e| TidalError::ParseError(format!("parsing explore JSON: {}", e)))?;
+        let page = client.get_page(&slug).await.map_err(|e| Self::request_error("Explore", e))?;
+        drop(client_guard);
 
         let parsed = Self::parse_explore_page(&page);
         info!("Explore '{}': {} sections", slug, parsed.sections.len());
         Ok(parsed)
     }
 
-    /// Parse a `/v1/pages/{path}` JSON body into an [`ExplorePage`].
-    ///
-    /// Defensive throughout: unknown module types are skipped, missing
-    /// fields fall back to sensible defaults, so a partial/changed payload
-    /// degrades gracefully instead of erroring.
-    fn parse_explore_page(page: &serde_json::Value) -> ExplorePage {
-        let title = page.get("title").and_then(|v| v.as_str()).unwrap_or("Explore").to_string();
-
-        let mut sections: Vec<ExploreSection> = Vec::new();
-
-        let rows = page.get("rows").and_then(|v| v.as_array());
-        for row in rows.into_iter().flatten() {
-            let modules = row.get("modules").and_then(|v| v.as_array());
-            for module in modules.into_iter().flatten() {
-                if let Some(section) = Self::parse_explore_module(module) {
-                    sections.push(section);
-                }
+    /// Keep request URLs and response bodies out of the error banner and logs.
+    fn request_error(context: &str, error: tidlers::error::TidalError) -> TidalError {
+        use tidlers::error::TidalError as ApiError;
+        use tidlers::requests::RequestClientError;
+        match error {
+            ApiError::NotAuthenticated => TidalError::NotAuthenticated,
+            ApiError::RequestClient(RequestClientError::StatusCode { status, .. }) => {
+                TidalError::RequestFailed(format!("{context} request failed (HTTP {})", status.as_u16()))
             }
+            ApiError::RequestClient(RequestClientError::Unauthorized) => {
+                TidalError::RequestFailed(format!("TIDAL refused the {context} request (HTTP 401)"))
+            }
+            other if is_tidlers_network_error(&other) => {
+                TidalError::NetworkError(format!("Could not reach TIDAL to load {context}. Please try again"))
+            }
+            _ => TidalError::RequestFailed(format!("Could not load {context} from TIDAL. Please try again")),
         }
+    }
 
-        ExplorePage { title, sections }
+    /// Convert a typed browse page, skipping unsupported or empty modules and
+    /// malformed individual items without discarding the usable sections.
+    fn parse_explore_page(page: &PageResponse) -> ExplorePage {
+        let sections = page.rows.iter().flat_map(|row| &row.modules).filter_map(Self::parse_explore_module).collect();
+        ExplorePage { title: page.title.clone(), sections }
     }
 
     /// Parse a single module into an [`ExploreSection`], or `None` if it is
     /// empty or an unsupported type (e.g. videos).
-    fn parse_explore_module(module: &serde_json::Value) -> Option<ExploreSection> {
-        let module_type = module.get("type").and_then(|v| v.as_str()).unwrap_or("");
-        let title = module.get("title").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    fn parse_explore_module(module: &PageModule) -> Option<ExploreSection> {
+        let title = module.title.clone().unwrap_or_default();
 
-        match module_type {
+        match module.page_type.as_str() {
             "FEATURED_PROMOTIONS" => {
-                let items: Vec<ExploreCard> = module
-                    .get("items")
-                    .and_then(|v| v.as_array())
-                    .map(|arr| arr.iter().filter_map(Self::parse_promo_card).collect())
-                    .unwrap_or_default();
+                let items: Vec<ExploreCard> = module.items.iter().flatten().filter_map(Self::parse_promo_card).collect();
                 (!items.is_empty()).then_some(ExploreSection::Featured { title, items })
             }
             "PAGE_LINKS" | "PAGE_LINKS_CLOUD" => {
-                let links: Vec<PageLink> = module
-                    .get("pagedList")
-                    .and_then(|v| v.get("items"))
-                    .and_then(|v| v.as_array())
-                    .map(|arr| arr.iter().filter_map(Self::parse_page_link).collect())
-                    .unwrap_or_default();
+                let links: Vec<PageLink> = Self::paged_items(module).iter().filter_map(Self::parse_page_link).collect();
                 (!links.is_empty()).then_some(ExploreSection::Links { title, links })
             }
             "ALBUM_LIST" => {
@@ -2361,8 +2229,8 @@ impl TidalAppClient {
         }
     }
 
-    fn paged_items(module: &serde_json::Value) -> Vec<serde_json::Value> {
-        module.get("pagedList").and_then(|v| v.get("items")).and_then(|v| v.as_array()).cloned().unwrap_or_default()
+    fn paged_items(module: &PageModule) -> &[serde_json::Value] {
+        module.paged_list.as_ref().and_then(|list| list.items.as_deref()).unwrap_or(&[])
     }
 
     /// Parse a FEATURED_PROMOTIONS item into a card with a nav target.
@@ -2523,34 +2391,83 @@ impl TidalAppClient {
     /// returns a mix id (`mixType=TRACK_MIX`), whose items we then fetch
     /// via `GET /v1/mixes/{mix_id}/items`.  Both hops go through tidlers.
     ///
-    /// Returns `(mix_id, tracks)`.  The mix id is what lets plays from
+    /// Returns `None` when the seed has no radio mix (404), otherwise
+    /// `Some((mix_id, tracks))`. The mix id is what lets plays from
     /// this view report as `sourceType=MIX, sourceId=<mix_id>` — the
     /// ONLY attribution that actually surfaces track-radio listening in
     /// TIDAL's Recently Played (empirically confirmed; the older
     /// `/tracks/{id}/radio` flat-list endpoint carries no mix id, so
     /// its plays could only be reported as the dead-end `TRACK_RADIO`
     /// sourceType that TIDAL's play_log silently drops).
-    pub async fn get_track_mix(&self, track_id: &str) -> TidalResult<(String, Vec<Track>)> {
+    pub async fn get_track_mix(&self, track_id: &str) -> TidalResult<Option<(String, Vec<Track>)>> {
         self.ensure_valid_token().await?;
         info!("Fetching track mix for track {}", track_id);
 
         let client_guard = self.client.lock().await;
         let client = client_guard.as_ref().ok_or(TidalError::NotAuthenticated)?;
-        let mix_response = client
-            .get_track_mix(track_id, None, None)
-            .await
-            .map_err(|e| TidalError::RequestFailed(format!("track mix: {e:?}")))?;
+        let Some(mix_response) = Self::track_radio_lookup(client.get_track_mix(track_id, None, None).await)? else {
+            info!("No track radio available for seed {}", track_id);
+            return Ok(None);
+        };
         let mix_id = mix_response.id;
 
-        let items_response = client
-            .get_mix_tracks(mix_id.clone(), None, None)
-            .await
-            .map_err(|e| TidalError::RequestFailed(format!("track mix items: {e:?}")))?;
+        let items_response = client.get_mix_tracks(mix_id.clone(), None, None).await.map_err(Self::track_radio_error)?;
         drop(client_guard);
 
         let tracks: Vec<Track> = items_response.items.into_iter().map(Track::from).collect();
         info!("Loaded track mix {} with {} tracks for seed track {}", mix_id, tracks.len(), track_id);
-        Ok((mix_id, tracks))
+        Ok(Some((mix_id, tracks)))
+    }
+
+    /// Only a missing seed mix is an ordinary absence. A later failure to
+    /// fetch its items is retryable and must not disable the seed's radio.
+    fn track_radio_lookup<T>(result: Result<T, tidlers::error::TidalError>) -> TidalResult<Option<T>> {
+        use tidlers::error::TidalError as ApiError;
+        use tidlers::requests::RequestClientError;
+        match result {
+            Ok(mix) => Ok(Some(mix)),
+            Err(ApiError::NotFound) => Ok(None),
+            Err(ApiError::RequestClient(RequestClientError::StatusCode { status, .. }))
+                if status == reqwest::StatusCode::NOT_FOUND =>
+            {
+                Ok(None)
+            }
+            Err(error) => Err(Self::track_radio_error(error)),
+        }
+    }
+
+    /// Radio errors shown in the UI contain neither Rust variant names nor
+    /// server URLs/bodies. Those are not useful instructions for a listener.
+    fn track_radio_error(error: tidlers::error::TidalError) -> TidalError {
+        use tidlers::error::TidalError as ApiError;
+        use tidlers::requests::RequestClientError;
+        let message = match error {
+            ApiError::NotAuthenticated => return TidalError::NotAuthenticated,
+            ApiError::NotFound => "This radio mix is no longer available on TIDAL".to_string(),
+            ApiError::RequestClient(RequestClientError::StatusCode { status, .. }) => match status.as_u16() {
+                401 => "TIDAL refused the radio request (HTTP 401). Try again or sign in again".to_string(),
+                403 => "Track radio is not accessible on TIDAL (HTTP 403)".to_string(),
+                404 => "This radio mix is no longer available on TIDAL. Please try again".to_string(),
+                429 => "TIDAL's request limit was reached. Please try again shortly".to_string(),
+                500..=599 => "TIDAL is having trouble loading radio. Please try again shortly".to_string(),
+                other => format!("TIDAL could not load radio (HTTP {other})"),
+            },
+            ApiError::RequestClient(RequestClientError::Unauthorized) => {
+                "TIDAL refused the radio request (HTTP 401). Try again or sign in again".to_string()
+            }
+            ApiError::RequestClient(RequestClientError::Timeout) => {
+                "The track radio request timed out. Please try again".to_string()
+            }
+            ApiError::RequestClient(RequestClientError::RequestError(error)) | ApiError::Request(error) => {
+                if error.is_timeout() {
+                    "The track radio request timed out. Please try again".to_string()
+                } else {
+                    "Could not load track radio from TIDAL. Check your connection and try again".to_string()
+                }
+            }
+            _ => "TIDAL returned an unexpected track radio response. Please try again".to_string(),
+        };
+        TidalError::RequestFailed(message)
     }
 
     // =========================================================================
@@ -2758,6 +2675,617 @@ impl TidalAppClient {
 
 #[cfg(test)]
 mod tests {
+    fn status_error(status: reqwest::StatusCode, body: &str) -> tidlers::error::TidalError {
+        tidlers::error::TidalError::RequestClient(tidlers::requests::RequestClientError::StatusCode {
+            status,
+            url: "https://example.invalid/playback?token=do-not-log".to_string(),
+            body_snippet: body.to_string(),
+        })
+    }
+
+    mod lyrics {
+        use super::super::{TidalAppClient, TidalError, TrackLyrics};
+        use serde_json::{Value, json};
+        use tidlers::client::models::track::LyricsResponse;
+
+        fn convert(value: Value) -> TrackLyrics {
+            let response: LyricsResponse = serde_json::from_value(value).expect("SDK lyrics fixture should deserialize");
+            TidalAppClient::lyrics_from_response(Ok(response)).expect("lyrics should convert")
+        }
+
+        #[test]
+        fn complete_response_preserves_text_attribution_and_timing() {
+            let text = "  First line\nSecond line  ";
+            let lyrics = convert(json!({
+                "trackId": 1, "lyricsProvider": "Provider", "providerCommontrackId": "common",
+                "providerLyricsId": "lyrics", "lyrics": text,
+                "subtitles": "[00:05.67]Second line\n[00:01.23]First line", "isRightToLeft": false
+            }));
+            assert_eq!(lyrics.provider.as_deref(), Some("Provider"));
+            assert_eq!(lyrics.plain_text.as_deref(), Some(text));
+            assert!(!lyrics.is_right_to_left);
+            assert!(!lyrics.is_empty());
+            assert!(lyrics.is_synced());
+            assert_eq!(lyrics.lrc_lines.len(), 2);
+            assert_eq!(lyrics.lrc_lines[0].time_ms, 1230);
+            assert_eq!(lyrics.lrc_lines[0].text, "First line");
+            assert_eq!(lyrics.lrc_lines[1].time_ms, 5670);
+            assert_eq!(lyrics.line_index_at(1.229), None);
+            assert_eq!(lyrics.line_index_at(1.230), Some(0));
+            assert_eq!(lyrics.line_index_at(5.670), Some(1));
+        }
+
+        #[test]
+        fn subtitles_only_response_keeps_synced_lyrics_without_provider_metadata() {
+            let lyrics = convert(json!({
+                "trackId": 1, "subtitles": "[00:02.00][00:04.00]Chorus"
+            }));
+            assert!(lyrics.plain_text.is_none());
+            assert!(lyrics.provider.is_none());
+            assert!(lyrics.is_synced());
+            assert!(!lyrics.is_empty());
+            assert!(!lyrics.is_right_to_left);
+            assert_eq!(lyrics.lrc_lines.iter().map(|line| line.time_ms).collect::<Vec<_>>(), [2000, 4000]);
+        }
+
+        #[test]
+        fn missing_null_and_blank_plain_text_remain_empty_without_subtitles() {
+            for payload in [
+                json!({"trackId": 1}),
+                json!({"trackId": 1, "lyrics": null, "lyricsProvider": null,
+                    "providerCommontrackId": null, "providerLyricsId": null, "subtitles": null}),
+                json!({"trackId": 1, "lyrics": "", "subtitles": ""}),
+                json!({"trackId": 1, "lyrics": " \t\n ", "subtitles": " "}),
+            ] {
+                let lyrics = convert(payload);
+                assert!(lyrics.plain_text.is_none());
+                assert!(lyrics.is_empty());
+                assert!(!lyrics.is_synced());
+            }
+        }
+
+        #[test]
+        fn plain_only_rtl_text_and_original_line_breaks_are_preserved() {
+            let text = "  مرحباً\nبالعالم  ";
+            let lyrics = convert(json!({"trackId": 1, "lyrics": text, "isRightToLeft": true}));
+            assert_eq!(lyrics.plain_text.as_deref(), Some(text));
+            assert!(lyrics.is_right_to_left);
+            assert!(!lyrics.is_empty());
+            assert!(!lyrics.is_synced());
+        }
+
+        #[test]
+        fn malformed_lrc_does_not_discard_usable_plain_text() {
+            let lyrics = convert(json!({"trackId": 1, "lyrics": "Plain words", "subtitles": "[not-a-time]ignore me"}));
+            assert_eq!(lyrics.plain_text.as_deref(), Some("Plain words"));
+            assert!(!lyrics.is_synced());
+            assert!(!lyrics.is_empty());
+        }
+
+        #[test]
+        fn sdk_not_found_is_a_normal_empty_result() {
+            let lyrics = TidalAppClient::lyrics_from_response(Err(tidlers::error::TidalError::NotFound)).unwrap();
+            assert!(lyrics.is_empty());
+            assert!(lyrics.provider.is_none());
+            assert!(!lyrics.is_right_to_left);
+        }
+
+        #[test]
+        fn auth_rate_limit_and_service_errors_are_not_cached_as_missing_lyrics() {
+            for status in [
+                reqwest::StatusCode::UNAUTHORIZED,
+                reqwest::StatusCode::FORBIDDEN,
+                reqwest::StatusCode::TOO_MANY_REQUESTS,
+                reqwest::StatusCode::SERVICE_UNAVAILABLE,
+            ] {
+                let message = TidalAppClient::lyrics_from_response(Err(super::status_error(status, "private upstream detail")))
+                    .unwrap_err()
+                    .to_string();
+                assert!(message.contains("Lyrics"));
+                assert!(message.contains(&format!("HTTP {}", status.as_u16())));
+                assert!(!message.contains("private upstream detail"));
+                assert!(!message.contains("do-not-log"));
+                assert!(!message.contains("StatusCode"));
+            }
+            assert!(matches!(
+                TidalAppClient::lyrics_from_response(Err(tidlers::error::TidalError::NotAuthenticated)),
+                Err(TidalError::NotAuthenticated)
+            ));
+            let timeout = tidlers::error::TidalError::RequestClient(tidlers::requests::RequestClientError::Timeout);
+            assert!(TidalAppClient::lyrics_from_response(Err(timeout)).is_err());
+        }
+
+        #[test]
+        fn malformed_response_remains_an_error() {
+            for payload in [json!({"status": 500}), json!({"trackId": 1, "lyrics": ["wrong type"]})] {
+                let error = serde_json::from_value::<LyricsResponse>(payload).unwrap_err();
+                assert!(TidalAppClient::lyrics_from_response(Err(tidlers::error::TidalError::JsonParse(error))).is_err());
+            }
+        }
+    }
+
+    mod favorite_albums {
+        use super::super::{Album, ApiPaginatedResponse, CollectionFavoriteAlbumsResponse, TidalAppClient};
+        use std::future::ready;
+
+        fn page(offset: i32, total: i32, ids: std::ops::Range<u64>) -> ApiPaginatedResponse<Album> {
+            let items: Vec<_> = ids.map(|id| serde_json::json!({
+                "created": "2026-01-01T00:00:00Z",
+                "item": {
+                    "id": id, "title": format!("Album {id}"), "cover": "aa-bb", "releaseDate": "2026-01-01",
+                    "artist": {"id": 9, "name": "Artist"}, "numberOfTracks": 12, "duration": 3600,
+                    "explicit": true, "audioQuality": "LOSSLESS", "mediaMetadata": {"tags": ["LOSSLESS", "HIRES_LOSSLESS"]}
+                }
+            })).collect();
+            let sdk: CollectionFavoriteAlbumsResponse = serde_json::from_value(serde_json::json!({
+                "items": items, "offset": offset, "limit": 100, "totalNumberOfItems": total
+            }))
+            .expect("SDK favourite-albums fixture should deserialize");
+            sdk.into()
+        }
+
+        #[tokio::test]
+        async fn all_album_pages_preserve_metadata_and_order() {
+            let mut calls = Vec::new();
+            let albums = TidalAppClient::collect_favorites("Favorite albums", |limit, offset| {
+                calls.push((limit, offset));
+                ready(Ok(match offset {
+                    0 => page(0, 205, 0..100),
+                    100 => page(100, 205, 100..200),
+                    200 => page(200, 205, 200..205),
+                    _ => panic!("unexpected offset {offset}"),
+                }))
+            })
+            .await
+            .unwrap();
+            assert_eq!(calls, [(100, 0), (100, 100), (100, 200)]);
+            assert_eq!(albums.len(), 205);
+            assert!(albums.iter().enumerate().all(|(i, album)| album.id == i.to_string()));
+            let album = &albums[0];
+            assert_eq!(album.title, "Album 0");
+            assert_eq!(album.artist_name, "Artist");
+            assert_eq!(album.artist_id.as_deref(), Some("9"));
+            assert_eq!(album.num_tracks, 12);
+            assert_eq!(album.duration, 3600);
+            assert_eq!(album.release_date.as_deref(), Some("2026-01-01"));
+            assert_eq!(album.cover_url.as_deref(), Some("https://resources.tidal.com/images/aa/bb/320x320.jpg"));
+            assert!(album.explicit);
+            assert_eq!(album.audio_quality.as_deref(), Some("LOSSLESS"));
+            assert_eq!(album.advertised_quality().as_deref(), Some("Hi-Res Lossless"));
+            assert!(album.review.is_none());
+        }
+
+        #[test]
+        fn absent_and_null_album_metadata_use_domain_defaults() {
+            for payload in [
+                serde_json::json!({"id": 1, "title": "Minimal"}),
+                serde_json::json!({"id": 1, "title": "Minimal", "artist": null, "cover": null,
+                    "numberOfTracks": null, "duration": null, "explicit": null, "mediaMetadata": null,
+                    "audioQuality": "HIGH"}),
+            ] {
+                let sdk: tidlers::client::models::album::Album = serde_json::from_value(payload).unwrap();
+                let album = Album::from(sdk);
+                assert_eq!(album.artist_name, "Unknown Artist");
+                assert!(album.artist_id.is_none());
+                assert_eq!(album.num_tracks, 0);
+                assert_eq!(album.duration, 0);
+                assert!(!album.explicit);
+                assert!(album.cover_url.is_none());
+                assert!(album.advertised_quality().is_none());
+            }
+        }
+
+        #[test]
+        fn explicit_zero_false_and_empty_tags_are_preserved() {
+            let sdk: tidlers::client::models::album::Album = serde_json::from_value(serde_json::json!({
+                "id": 1, "title": "Empty", "numberOfTracks": 0, "duration": 0,
+                "explicit": false, "audioQuality": "HIGH", "mediaMetadata": {"tags": []}
+            }))
+            .unwrap();
+            let album = Album::from(sdk);
+            assert_eq!(album.num_tracks, 0);
+            assert_eq!(album.duration, 0);
+            assert!(!album.explicit);
+            assert_eq!(album.audio_quality.as_deref(), Some("HIGH"));
+            assert!(album.quality_tags.is_empty());
+            assert!(album.advertised_quality().is_none());
+        }
+
+        #[tokio::test]
+        async fn album_request_failure_does_not_return_a_partial_collection() {
+            let result = TidalAppClient::collect_favorites("Favorite albums", |_, offset| {
+                ready(if offset == 0 {
+                    Ok(page(0, 101, 0..100))
+                } else {
+                    Err(tidlers::error::TidalError::Other("private upstream detail".into()))
+                })
+            })
+            .await;
+            let error = result.unwrap_err().to_string();
+            assert!(error.contains("Favorite albums"));
+            assert!(!error.contains("private upstream detail"));
+        }
+
+        #[tokio::test]
+        async fn empty_album_collection_finishes_after_one_request() {
+            let mut calls = 0;
+            let albums = TidalAppClient::collect_favorites("Favorite albums", |limit, offset| {
+                calls += 1;
+                assert_eq!((limit, offset), (100, 0));
+                ready(Ok(page(0, 0, 0..0)))
+            })
+            .await
+            .unwrap();
+            assert!(albums.is_empty());
+            assert_eq!(calls, 1);
+        }
+    }
+
+    mod favorite_tracks {
+        use super::super::{ApiPaginatedResponse, CollectionFavoriteTracksResponse, TidalAppClient, Track};
+        use std::future::ready;
+
+        fn sdk_page(offset: i32, total: i32, ids: std::ops::Range<u64>) -> CollectionFavoriteTracksResponse {
+            let items: Vec<_> = ids
+                .map(|id| {
+                    serde_json::json!({
+                        "created": "2026-01-01T00:00:00Z",
+                        "item": {
+                            "id": id, "title": format!("Track {id}"), "duration": 123,
+                            "replayGain": -3.0, "peak": 0.9, "allowStreaming": true,
+                            "streamReady": true, "payToStream": false, "adSupportedStreamReady": false,
+                            "djReady": false, "stemReady": false, "premiumStreamingOnly": false,
+                            "trackNumber": 7, "volumeNumber": 1, "popularity": 1,
+                            "url": "https://example.invalid/track", "editable": false,
+                            "explicit": true, "audioQuality": "LOSSLESS", "audioModes": ["STEREO"],
+                            "upload": false, "artist": {"id": 9, "name": "Artist"}, "artists": [],
+                            "album": {"id": 99, "title": "Album", "cover": "aa-bb"}
+                        }
+                    })
+                })
+                .collect();
+            serde_json::from_value(serde_json::json!({
+                "items": items, "offset": offset, "limit": 100, "totalNumberOfItems": total
+            }))
+            .expect("SDK favourites fixture should deserialize")
+        }
+
+        fn page(offset: i32, total: i32, ids: std::ops::Range<u64>) -> ApiPaginatedResponse<Track> {
+            sdk_page(offset, total, ids).into()
+        }
+
+        #[tokio::test]
+        async fn loads_all_pages_in_order_and_preserves_track_metadata() {
+            let mut calls = Vec::new();
+            let tracks = TidalAppClient::collect_favorites("Favorite tracks", |limit, offset| {
+                calls.push((limit, offset));
+                ready(Ok(match offset {
+                    0 => page(0, 205, 0..100),
+                    100 => page(100, 205, 100..200),
+                    200 => page(200, 205, 200..205),
+                    _ => panic!("unexpected offset {offset}"),
+                }))
+            })
+            .await
+            .unwrap();
+            assert_eq!(calls, [(100, 0), (100, 100), (100, 200)]);
+            assert_eq!(tracks.len(), 205);
+            assert!(tracks.iter().enumerate().all(|(i, track)| track.id == i.to_string()));
+            let track = &tracks[0];
+            assert_eq!(track.title, "Track 0");
+            assert_eq!(track.artist_name, "Artist");
+            assert_eq!(track.artist_id.as_deref(), Some("9"));
+            assert_eq!(track.album_name.as_deref(), Some("Album"));
+            assert_eq!(track.album_id.as_deref(), Some("99"));
+            assert_eq!(track.cover_url.as_deref(), Some("https://resources.tidal.com/images/aa/bb/320x320.jpg"));
+            assert_eq!(track.duration, 123);
+            assert_eq!(track.track_number, 7);
+            assert!(track.explicit);
+            assert_eq!(track.audio_quality.as_deref(), Some("LOSSLESS"));
+            assert!(!track.is_video);
+        }
+
+        #[tokio::test]
+        async fn short_pages_advance_by_returned_count_not_requested_limit() {
+            let mut offsets = Vec::new();
+            let tracks = TidalAppClient::collect_favorites("Favorite tracks", |_, offset| {
+                offsets.push(offset);
+                ready(Ok(match offset {
+                    0 => page(0, 3, 0..2),
+                    2 => page(2, 3, 2..3),
+                    _ => panic!("unexpected offset {offset}"),
+                }))
+            })
+            .await
+            .unwrap();
+            assert_eq!(offsets, [0, 2]);
+            assert_eq!(tracks.len(), 3);
+        }
+
+        #[tokio::test]
+        async fn an_empty_page_stops_even_when_the_reported_total_is_stale() {
+            for total in [0, 100] {
+                let mut calls = 0;
+                let tracks = TidalAppClient::collect_favorites("Favorite tracks", |_, offset| {
+                    calls += 1;
+                    assert_eq!(offset, 0);
+                    ready(Ok(page(0, total, 0..0)))
+                })
+                .await
+                .unwrap();
+                assert_eq!(calls, 1);
+                assert!(tracks.is_empty());
+            }
+        }
+
+        #[tokio::test]
+        async fn a_later_page_failure_does_not_return_a_partial_collection() {
+            let mut offsets = Vec::new();
+            let result = TidalAppClient::collect_favorites("Favorite tracks", |_, offset| {
+                offsets.push(offset);
+                ready(if offset == 0 {
+                    Ok(page(0, 101, 0..100))
+                } else {
+                    Err(tidlers::error::TidalError::Other("private upstream detail".into()))
+                })
+            })
+            .await;
+            assert_eq!(offsets, [0, 100]);
+            let error = result.unwrap_err().to_string();
+            assert!(error.contains("Favorite tracks"));
+            assert!(!error.contains("private upstream detail"));
+        }
+
+        #[tokio::test]
+        async fn wrong_offsets_and_negative_totals_fail_explicitly() {
+            // A server that ignores offset repeats the first page.
+            let result = TidalAppClient::collect_favorites("Favorite tracks", |_, _| ready(Ok(page(0, 101, 0..100)))).await;
+            assert!(result.unwrap_err().to_string().contains("unexpected page offset"));
+            let result = TidalAppClient::collect_favorites("Favorite tracks", |_, _| ready(Ok(page(0, -1, 0..0)))).await;
+            assert!(result.unwrap_err().to_string().contains("negative total"));
+        }
+
+        #[tokio::test]
+        async fn a_track_without_an_album_still_converts() {
+            let mut response = sdk_page(0, 1, 1..2);
+            response.items[0].item.album = None;
+            let mut response = Some(ApiPaginatedResponse::<Track>::from(response));
+            let tracks =
+                TidalAppClient::collect_favorites("Favorite tracks", |_, _| ready(Ok(response.take().unwrap()))).await.unwrap();
+            assert!(tracks[0].album_id.is_none());
+            assert!(tracks[0].cover_url.is_none());
+        }
+    }
+
+    mod explore_pages {
+        use super::super::{ExplorePage, ExploreSection, ExploreTarget, PageResponse, TidalAppClient};
+        use serde_json::{Value, json};
+
+        fn convert(modules: Vec<Value>) -> ExplorePage {
+            let page: PageResponse = serde_json::from_value(json!({
+                "id": "explore", "title": "Explore", "rows": [{"modules": modules}]
+            }))
+            .expect("tidlers should parse the page");
+            TidalAppClient::parse_explore_page(&page)
+        }
+
+        #[test]
+        fn sparse_featured_cards_keep_their_targets_and_artwork() {
+            let page = convert(vec![json!({
+                "type": "FEATURED_PROMOTIONS", "description": null, "width": null, "pagedList": null,
+                "items": [
+                    {"type": "ALBUM", "header": "Featured album", "artifactId": "123", "imageId": "ab-cd"},
+                    {"type": "PAGE", "shortHeader": "R&B / Soul", "artifactId": "pages/genre_rnb"},
+                    {"type": "EXTURL", "header": "Magazine", "artifactId": "https://example.invalid"},
+                    null
+                ]
+            })]);
+            assert_eq!(page.title, "Explore");
+            let [ExploreSection::Featured { title, items }] = page.sections.as_slice() else {
+                panic!("expected one Featured section");
+            };
+            assert!(title.is_empty());
+            assert_eq!(items.len(), 2);
+            assert!(matches!(&items[0].target, ExploreTarget::Album(id) if id == "123"));
+            assert!(items[0].image_url.is_some());
+            assert!(matches!(&items[1].target, ExploreTarget::Page(path) if path == "pages/genre_rnb"));
+        }
+
+        #[test]
+        fn mixed_page_keeps_links_albums_playlists_and_artists_in_order() {
+            let page = convert(vec![
+                json!({"type": "PAGE_LINKS_CLOUD", "title": "Genres", "pagedList": {"items": [
+                    {"title": "R&B / Soul", "apiPath": "pages/genre_rnb"}, {"title": "Missing path"}
+                ]}}),
+                json!({"type": "PAGE_LINKS", "pagedList": {"items": [
+                    {"text": "Moods", "path": "/v1/pages/moods"}
+                ]}}),
+                json!({"type": "FUTURE_BANNER", "payload": {"unknown": true}}),
+                json!({"type": "ALBUM_LIST", "title": "New Albums", "pagedList": {"items": [
+                    {"id": 123, "title": "Album", "artists": [{"id": 7, "name": "Artist"}],
+                     "mediaMetadata": {"tags": ["LOSSLESS", "HIRES_LOSSLESS"]}},
+                    {"id": 456}, null
+                ]}}),
+                json!({"type": "PLAYLIST_LIST", "title": "Essentials", "pagedList": {"items": [
+                    {"uuid": "playlist-id", "title": "Playlist", "numberOfTracks": 12}, {"title": "Missing id"}
+                ]}}),
+                json!({"type": "ARTIST_LIST", "pagedList": {"items": [
+                    {"id": "7", "name": "Artist"}, {"id": "8"}, false
+                ]}}),
+            ]);
+            let [
+                ExploreSection::Links { links: genres, .. },
+                ExploreSection::Links { links: moods, .. },
+                ExploreSection::Albums { albums, .. },
+                ExploreSection::Playlists { playlists, .. },
+                ExploreSection::Artists { artists, .. },
+            ] = page.sections.as_slice()
+            else {
+                panic!("expected five usable sections in source order");
+            };
+            assert_eq!(genres.len(), 1);
+            assert_eq!(genres[0].path, "pages/genre_rnb");
+            assert_eq!(moods[0].path, "/v1/pages/moods");
+            assert_eq!(albums.len(), 1);
+            assert_eq!(albums[0].id, "123");
+            assert_eq!(albums[0].artist_name, "Artist");
+            assert_eq!(albums[0].advertised_quality().as_deref(), Some("Hi-Res Lossless"));
+            assert_eq!(playlists.len(), 1);
+            assert_eq!(playlists[0].uuid, "playlist-id");
+            assert_eq!(playlists[0].num_tracks, 12);
+            assert_eq!(artists.len(), 1);
+            assert_eq!(artists[0].id, "7");
+        }
+
+        #[test]
+        fn missing_null_and_empty_collections_do_not_create_empty_sections() {
+            let page = convert(vec![
+                json!({"type": "FEATURED_PROMOTIONS"}),
+                json!({"type": "FEATURED_PROMOTIONS", "items": null}),
+                json!({"type": "ALBUM_LIST", "pagedList": null}),
+                json!({"type": "PLAYLIST_LIST", "pagedList": {"dataApiPath": "playlists"}}),
+                json!({"type": "ARTIST_LIST", "pagedList": {"items": null}}),
+                json!({"type": "PAGE_LINKS", "pagedList": {"items": []}}),
+            ]);
+            assert!(page.sections.is_empty());
+            assert!(convert(vec![]).sections.is_empty());
+        }
+
+        #[test]
+        fn each_module_reads_the_correct_item_collection() {
+            let page = convert(vec![
+                json!({"type": "FEATURED_PROMOTIONS", "items": [
+                    {"type": "ALBUM", "header": "Direct promo", "artifactId": "123"}
+                ], "pagedList": {"items": [{"type": "ALBUM", "header": "Wrong collection", "artifactId": "456"}]}}),
+                json!({"type": "ALBUM_LIST", "items": [{"id": 123, "title": "Wrong collection"}],
+                    "pagedList": {"items": [{"id": 456, "title": "Paged album"}]}}),
+            ]);
+            let [ExploreSection::Featured { items, .. }, ExploreSection::Albums { albums, .. }] = page.sections.as_slice() else {
+                panic!("expected promo and album sections");
+            };
+            assert_eq!(items[0].title, "Direct promo");
+            assert_eq!(albums[0].title, "Paged album");
+        }
+
+        #[test]
+        fn tidlers_normalizes_all_supported_page_link_forms() {
+            let client = tidlers::TidalClient::new(&tidlers::auth::TidalAuth::with_oauth());
+            for path in
+                ["genre_rnb", "/genre_rnb", "pages/genre_rnb", "/pages/genre_rnb", "v1/pages/genre_rnb", "/v1/pages/genre_rnb"]
+            {
+                assert_eq!(client.normalize_page_slug(path), "genre_rnb");
+            }
+            assert_eq!(client.normalize_page_slug("explore"), "explore");
+        }
+
+        #[test]
+        fn request_errors_do_not_expose_urls_bodies_or_rust_variants() {
+            let error = super::status_error(reqwest::StatusCode::INTERNAL_SERVER_ERROR, "private-body");
+            let message = TidalAppClient::request_error("Explore", error).to_string();
+            assert!(message.contains("HTTP 500"));
+            assert!(!message.contains("private-body"));
+            assert!(!message.contains("do-not-log"));
+            assert!(!message.contains("RequestClient"));
+        }
+    }
+
+    #[test]
+    fn only_an_explicit_asset_error_is_unavailable() {
+        let err = status_error(
+            reqwest::StatusCode::UNAUTHORIZED,
+            r#"{"status":401,"subStatus":4005,"userMessage":"Asset is not ready for playback"}"#,
+        );
+        assert_eq!(classify_playback_error(&err), PlaybackFailure::Unavailable);
+    }
+
+    #[test]
+    fn a_401_without_asset_evidence_must_not_skip() {
+        let err = tidlers::error::TidalError::RequestClient(tidlers::requests::RequestClientError::Unauthorized);
+        assert_eq!(classify_playback_error(&err), PlaybackFailure::Rejected);
+        for body in [r#"{"status":401,"subStatus":1001}"#, "{}", "unauthorized", r#"{"subStatus":400"#] {
+            assert_eq!(
+                classify_playback_error(&status_error(reqwest::StatusCode::UNAUTHORIZED, body)),
+                PlaybackFailure::Rejected
+            );
+        }
+    }
+
+    #[test]
+    fn other_http_errors_do_not_skip_or_leak_response_data() {
+        for status in [
+            reqwest::StatusCode::FORBIDDEN,
+            reqwest::StatusCode::NOT_FOUND,
+            reqwest::StatusCode::TOO_MANY_REQUESTS,
+            reqwest::StatusCode::INTERNAL_SERVER_ERROR,
+        ] {
+            let failure = classify_playback_error(&status_error(status, r#"{"subStatus":4005,"token":"private"}"#));
+            assert!(matches!(failure, PlaybackFailure::Failed(_)));
+            assert_eq!(failure.to_string(), format!("TIDAL playback request failed (HTTP {})", status.as_u16()));
+        }
+    }
+
+    #[test]
+    fn missing_track_radio_is_a_normal_absence() {
+        let missing = status_error(
+            reqwest::StatusCode::NOT_FOUND,
+            r#"{"status":404,"subStatus":2001,"userMessage":"TrackMixId for mixId: [459351692] not found"}"#,
+        );
+        assert!(TidalAppClient::track_radio_lookup::<()>(Err(missing)).unwrap().is_none());
+        assert!(TidalAppClient::track_radio_lookup::<()>(Err(tidlers::error::TidalError::NotFound)).unwrap().is_none());
+        assert_eq!(TidalAppClient::track_radio_lookup(Ok("mix-id")).unwrap(), Some("mix-id"));
+    }
+
+    #[test]
+    fn radio_auth_rate_limit_and_service_errors_remain_retryable() {
+        for status in [
+            reqwest::StatusCode::UNAUTHORIZED,
+            reqwest::StatusCode::FORBIDDEN,
+            reqwest::StatusCode::TOO_MANY_REQUESTS,
+            reqwest::StatusCode::INTERNAL_SERVER_ERROR,
+        ] {
+            let error = TidalAppClient::track_radio_lookup::<()>(Err(status_error(status, "private-body"))).unwrap_err();
+            let text = error.to_string();
+            assert!(!text.contains("private-body"));
+            assert!(!text.contains("do-not-log"));
+            assert!(!text.contains("StatusCode"));
+            assert!(!text.contains("RequestClient"));
+            assert!(text.contains("TIDAL"));
+        }
+    }
+
+    #[test]
+    fn a_missing_radio_items_page_remains_a_retryable_error() {
+        let error = TidalAppClient::track_radio_error(status_error(reqwest::StatusCode::NOT_FOUND, "private-body"));
+        assert_eq!(error.to_string(), "Request failed: This radio mix is no longer available on TIDAL. Please try again");
+    }
+
+    #[test]
+    fn malformed_and_timeout_radio_responses_do_not_claim_absence() {
+        for error in [
+            tidlers::error::TidalError::Other("private-body".into()),
+            tidlers::error::TidalError::RequestClient(tidlers::requests::RequestClientError::Timeout),
+            tidlers::error::TidalError::RequestClient(tidlers::requests::RequestClientError::Unauthorized),
+        ] {
+            let text = TidalAppClient::track_radio_lookup::<()>(Err(error)).unwrap_err().to_string();
+            assert!(!text.contains("private-body"));
+            assert!(!text.contains("RequestClient"));
+        }
+    }
+
+    #[test]
+    fn anything_else_keeps_its_message() {
+        let err = tidlers::error::TidalError::Other("kaboom".to_string());
+        match classify_playback_error(&err) {
+            PlaybackFailure::Failed(msg) => assert!(msg.contains("kaboom"), "{msg}"),
+            other => panic!("expected a failure, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn an_unavailable_track_reads_as_itself() {
+        assert_eq!(PlaybackFailure::Unavailable.to_string(), "This item is not available for playback on TIDAL");
+    }
+
     use super::*;
 
     #[test]

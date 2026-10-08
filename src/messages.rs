@@ -13,7 +13,7 @@ use tokio::sync::Mutex;
 
 use crate::config::{AudioQuality, Config, LogLevel};
 use crate::tidal::auth::LoginRequest;
-use crate::tidal::client::PlaybackUrl;
+use crate::tidal::client::{PlaybackFailure, PlaybackUrl};
 use crate::tidal::models::{
     Album, Artist, ExplorePage, ExploreTarget, FeedActivity, Mix, PlaybackSource, Playlist, SearchResults, Track,
 };
@@ -139,10 +139,9 @@ pub enum Message {
     // Track Radio
     /// Show track radio view for a specific track
     ShowTrackRadio(Track),
-    /// Track radio loaded: `(mix_id, tracks)`.  Track radio is a
-    /// track-seeded Mix; the mix id lets plays attribute as
-    /// `MIX:<mix_id>` so they surface in TIDAL's Recently Played.
-    TrackRadioLoaded(Result<(String, Vec<Track>), String>),
+    /// Radio request generation, seed id and result. `Ok(None)` means TIDAL
+    /// has no mix for the seed; a present `(mix_id, tracks)` carries attribution.
+    TrackRadioLoaded(u64, String, Result<Option<(String, Vec<Track>)>, String>),
 
     // Track Lyrics
     /// Open the lyrics view for a specific track and kick off the fetch.
@@ -274,10 +273,10 @@ pub enum Message {
     SeekTo(f64),
     /// Execute debounced seek (version)
     SeekDebounced(u64),
-    /// Playback URL received for track
-    PlaybackUrlReceived(Result<(Track, PlaybackUrl), String>),
-    /// HLS URL resolved for a music video; starts the GStreamer pipeline.
-    VideoUrlReceived(Result<(Track, String), String>),
+    /// Playback resolution generation and result for an audio track.
+    PlaybackUrlReceived(u64, Result<(Track, PlaybackUrl), PlaybackFailure>),
+    /// Playback resolution generation and HLS result for a music video.
+    VideoUrlReceived(u64, Result<(Track, String), PlaybackFailure>),
     /// Pointer interaction over the video surface — reveals the overlay
     /// controls (which auto-hide again after a few idle seconds).
     VideoInteraction,
@@ -287,7 +286,7 @@ pub enum Message {
     /// burst of rapid skips collapses into one TIDAL request.
     ResolvePlaybackDebounced(u64),
     /// Preload URL received for gapless playback
-    PreloadUrlReceived(Result<(Track, PlaybackUrl), String>),
+    PreloadUrlReceived(Result<(Track, PlaybackUrl), PlaybackFailure>),
     /// Gapless transition occurred — the preloaded track started playing
     GaplessTransition,
     /// Periodic playback tick — updates position, processes engine events,

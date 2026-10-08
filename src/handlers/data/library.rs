@@ -156,18 +156,20 @@ impl AppModel {
 
     /// Load the track-seeded mix for a track (TIDAL's "Track Radio").
     ///
-    /// Returns `(mix_id, tracks)` so the view can attribute plays as
+    /// A present `(mix_id, tracks)` lets the view attribute plays as
     /// `MIX:<mix_id>` — the attribution that surfaces track-radio
     /// listening in TIDAL's Recently Played.  See
     /// [`TidalAppClient::get_track_mix`](crate::tidal::client::TidalAppClient::get_track_mix).
     pub(crate) fn load_track_radio(&self, track_id: String) -> Task<cosmic::Action<Message>> {
         let client = self.tidal_client.clone();
+        let version = self.track_radio_request_version;
         Task::perform(
             async move {
                 let client = client.lock().await;
-                client.get_track_mix(&track_id).await.map_err(|e| e.to_string())
+                let result = client.get_track_mix(&track_id).await.map_err(|e| e.to_string());
+                (track_id, result)
             },
-            |result| cosmic::Action::App(Message::TrackRadioLoaded(result)),
+            move |(track_id, result)| cosmic::Action::App(Message::TrackRadioLoaded(version, track_id, result)),
         )
     }
 
@@ -798,23 +800,50 @@ impl AppModel {
     ///
     /// Stores the backing mix id (for `MIX:<mix_id>` play attribution)
     /// alongside the resolved track list.
-    pub fn handle_track_radio_loaded(&mut self, result: Result<(String, Vec<Track>), String>) -> Task<cosmic::Action<Message>> {
-        self.is_loading = false;
+    pub fn handle_track_radio_loaded(
+        &mut self,
+        version: u64,
+        track_id: String,
+        result: Result<Option<(String, Vec<Track>)>, String>,
+    ) -> Task<cosmic::Action<Message>> {
+        if version != self.track_radio_request_version {
+            return Task::none();
+        }
+        if matches!(&result, Ok(None)) {
+            std::sync::Arc::make_mut(&mut self.unavailable_radio_tracks).insert(track_id.clone());
+        }
+        if !self.selected_radio_source_track.as_ref().is_some_and(|track| track.id == track_id) {
+            return Task::none();
+        }
+        self.track_radio_loading = false;
+        let visible = self.view_state == ViewState::TrackRadio;
         match result {
-            Ok((mix_id, tracks)) => {
+            Ok(Some((mix_id, tracks))) => {
                 tracing::info!("Loaded track radio: mix={} tracks={}", mix_id, tracks.len());
-                self.set_track_list(tracks.clone());
+                if visible {
+                    self.set_track_list(tracks.clone());
+                    self.error_message = None;
+                }
                 self.selected_radio_tracks = tracks;
                 self.selected_radio_mix_id = Some(mix_id);
-                // Covers load lazily per visible row via get_or_request.
-                Task::none()
+            }
+            Ok(None) => {
+                tracing::info!("TIDAL has no radio mix for track {}", track_id);
+                self.selected_radio_tracks.clear();
+                self.selected_radio_mix_id = None;
+                if visible {
+                    self.set_track_list(Vec::new());
+                    self.error_message = None;
+                }
             }
             Err(e) => {
-                tracing::error!("Failed to load track radio: {}", e);
-                self.error_message = Some(format!("Failed to load track radio: {}", e));
-                Task::none()
+                tracing::warn!("Failed to load track radio for {}: {}", track_id, e);
+                if visible {
+                    self.error_message = Some(e);
+                }
             }
         }
+        Task::none()
     }
 
     /// Handle lyrics loaded result.
@@ -971,12 +1000,13 @@ impl AppModel {
         }
     }
 
-    /// Drill into an Explore sub-page (genre/mood/decade): push the slug
-    /// onto the back stack and fetch it.
+    /// Open an Explore sub-page or retry the current page. Retrying preserves
+    /// the back stack; opening a different page adds its slug.
     pub fn handle_load_explore_page(&mut self, slug: String) -> Task<cosmic::Action<Message>> {
-        self.explore_stack.push(slug.clone());
-        self.explore_loading = true;
-        self.load_explore_page(&slug)
+        if self.explore_stack.last() != Some(&slug) {
+            self.explore_stack.push(slug.clone());
+        }
+        self.begin_explore_page_load(&slug)
     }
 
     /// Pop one level off the Explore back stack and reload the parent page.
@@ -984,12 +1014,7 @@ impl AppModel {
         if self.explore_stack.len() > 1 {
             self.explore_stack.pop();
         }
-        if let Some(slug) = self.explore_stack.last().cloned() {
-            self.explore_loading = true;
-            self.load_explore_page(&slug)
-        } else {
-            Task::none()
-        }
+        if let Some(slug) = self.explore_stack.last().cloned() { self.begin_explore_page_load(&slug) } else { Task::none() }
     }
 
     /// Activate an Explore card/promo target.
@@ -1003,6 +1028,23 @@ impl AppModel {
             ExploreTarget::Page(slug) => self.handle_load_explore_page(slug),
             ExploreTarget::None => Task::none(),
         }
+    }
+
+    /// Show a loading state without leaving the previous page's rows active.
+    pub(crate) fn begin_explore_page_load(&mut self, slug: &str) -> Task<cosmic::Action<Message>> {
+        self.explore_page = None;
+        self.rebuild_explore_rows();
+        self.explore_loading = true;
+        self.error_message = None;
+        self.load_explore_page(slug)
+    }
+
+    /// Replace the row set and its widget identity together. List layout and
+    /// scroll state belong to one page, while artwork redraws keep that state.
+    pub(crate) fn rebuild_explore_rows(&mut self) {
+        self.explore_rows = self.explore_page.as_ref().map(|page| page.into_rows().into_iter().collect()).unwrap_or_default();
+        self.explore_rows_revision = self.explore_rows_revision.wrapping_add(1);
+        tracing::debug!(revision = self.explore_rows_revision, rows = self.explore_rows.len(), "Rebuilt Explore list");
     }
 
     /// Handle an Explore page finishing loading: store it and preload covers.
@@ -1034,9 +1076,8 @@ impl AppModel {
                         ExploreSection::Links { .. } => {}
                     }
                 }
-                // Flatten into virtual-list rows for smooth scrolling.
-                self.explore_rows = page.into_rows().into_iter().collect();
                 self.explore_page = Some(page);
+                self.rebuild_explore_rows();
                 self.load_images_for_urls(urls)
             }
             Err(e) => {
@@ -1071,5 +1112,149 @@ impl AppModel {
                 Task::none()
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod track_radio_tests {
+    use crate::state::{AppModel, ViewState};
+    use crate::tidal::models::Track;
+    use cosmic::Application;
+    use std::sync::Arc;
+
+    fn app() -> AppModel {
+        let (mut app, startup) = AppModel::init(cosmic::Core::default(), ());
+        drop(startup);
+        app.is_loading = false;
+        app
+    }
+
+    fn track(id: &str) -> Track {
+        Track { id: id.into(), title: id.into(), ..Track::default() }
+    }
+
+    #[tokio::test]
+    async fn no_mix_shows_an_empty_state_and_remembers_only_that_seed() {
+        let mut app = app();
+        drop(app.handle_show_track_radio(track("missing")));
+        let version = app.track_radio_request_version;
+        drop(app.handle_track_radio_loaded(version, "missing".into(), Ok(None)));
+        assert!(!app.track_radio_loading);
+        assert!(app.error_message.is_none());
+        assert!(app.selected_radio_tracks.is_empty());
+        assert!(app.track_list_content.is_empty());
+        assert!(app.selected_radio_mix_id.is_none());
+        assert!(app.unavailable_radio_tracks.contains("missing"));
+        assert!(!app.unavailable_radio_tracks.contains("other"));
+        assert_eq!(app.handle_show_track_radio(track("missing")).units(), 0);
+        assert!(!app.track_radio_loading);
+        assert!(app.handle_show_track_radio(track("other")).units() > 0);
+        assert!(app.track_radio_loading);
+    }
+
+    #[tokio::test]
+    async fn transient_failure_keeps_radio_enabled_and_retryable() {
+        let mut app = app();
+        drop(app.handle_show_track_radio(track("retry")));
+        let version = app.track_radio_request_version;
+        drop(app.handle_track_radio_loaded(version, "retry".into(), Err("TIDAL is busy. Try again shortly".into())));
+        assert!(!app.track_radio_loading);
+        assert_eq!(app.error_message.as_deref(), Some("TIDAL is busy. Try again shortly"));
+        assert!(app.unavailable_radio_tracks.is_empty());
+        assert!(app.handle_show_track_radio(track("retry")).units() > 0);
+        assert!(app.error_message.is_none());
+    }
+
+    #[tokio::test]
+    async fn a_late_response_cannot_change_the_new_selection() {
+        let mut app = app();
+        drop(app.handle_show_track_radio(track("old")));
+        let old_version = app.track_radio_request_version;
+        drop(app.handle_show_track_radio(track("new")));
+        drop(app.handle_track_radio_loaded(old_version, "old".into(), Ok(None)));
+        assert!(app.track_radio_loading);
+        assert!(app.unavailable_radio_tracks.is_empty());
+        assert_eq!(app.selected_radio_source_track.as_ref().unwrap().id, "new");
+        drop(app.handle_track_radio_loaded(old_version, "old".into(), Err("late error".into())));
+        assert!(app.error_message.is_none());
+    }
+
+    #[tokio::test]
+    async fn successful_radio_keeps_mix_attribution_and_tracks() {
+        let mut app = app();
+        drop(app.handle_show_track_radio(track("seed")));
+        let version = app.track_radio_request_version;
+        drop(app.handle_track_radio_loaded(version, "seed".into(), Ok(Some(("mix-id".into(), vec![track("recommended")])))));
+        assert!(!app.track_radio_loading);
+        assert_eq!(app.selected_radio_mix_id.as_deref(), Some("mix-id"));
+        assert_eq!(app.selected_radio_tracks[0].id, "recommended");
+        assert_eq!(app.track_list_content.len(), 1);
+        assert!(app.error_message.is_none());
+        assert!(app.unavailable_radio_tracks.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_mix_with_no_items_does_not_mark_the_seed_unavailable() {
+        let mut app = app();
+        drop(app.handle_show_track_radio(track("empty")));
+        let version = app.track_radio_request_version;
+        drop(app.handle_track_radio_loaded(version, "empty".into(), Ok(Some(("mix-id".into(), Vec::new())))));
+        assert!(!app.track_radio_loading);
+        assert!(app.selected_radio_tracks.is_empty());
+        assert!(app.unavailable_radio_tracks.is_empty());
+    }
+
+    #[tokio::test]
+    async fn leaving_radio_preserves_the_other_views_list_and_loading_state() {
+        let mut app = app();
+        drop(app.handle_show_track_radio(track("missing")));
+        let version = app.track_radio_request_version;
+        app.view_state = ViewState::History;
+        app.set_track_list(vec![track("history")]);
+        app.is_loading = true;
+        drop(app.handle_track_radio_loaded(version, "missing".into(), Ok(None)));
+        assert_eq!(app.view_state, ViewState::History);
+        assert_eq!(app.track_list_content.get(0).unwrap().id, "history");
+        assert!(app.is_loading);
+        assert!(!app.track_radio_loading);
+        assert!(app.unavailable_radio_tracks.contains("missing"));
+    }
+
+    #[tokio::test]
+    async fn back_from_pending_radio_does_not_leave_a_loaded_parent_on_a_spinner() {
+        for parent in [ViewState::PlaylistDetail, ViewState::MixDetail] {
+            for result in [Ok(None), Err("offline".into()), Ok(Some(("mix-id".into(), vec![track("recommendation")])))] {
+                let mut app = app();
+                app.view_state = parent.clone();
+                app.selected_playlist_tracks = vec![track("parent")];
+                app.selected_mix_tracks = vec![track("parent")];
+                app.set_track_list(vec![track("parent")]);
+                drop(app.handle_show_track_radio(track("seed")));
+                let version = app.track_radio_request_version;
+                assert!(app.track_radio_loading);
+                assert!(!app.is_loading);
+                drop(app.handle_navigate_back());
+                assert_eq!(app.view_state, parent);
+                assert!(!app.is_loading);
+                assert_eq!(app.track_list_content.get(0).unwrap().id, "parent");
+                drop(app.handle_track_radio_loaded(version, "seed".into(), result));
+                assert!(!app.track_radio_loading);
+                assert!(!app.is_loading);
+                assert_eq!(app.track_list_content.get(0).unwrap().id, "parent");
+                assert!(app.error_message.is_none());
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn logout_clears_availability_and_rejects_old_session_responses() {
+        let mut app = app();
+        Arc::make_mut(&mut app.unavailable_radio_tracks).insert("known-missing".into());
+        drop(app.handle_show_track_radio(track("pending")));
+        let version = app.track_radio_request_version;
+        drop(app.handle_logout());
+        assert!(app.unavailable_radio_tracks.is_empty());
+        drop(app.handle_track_radio_loaded(version, "pending".into(), Ok(None)));
+        assert!(app.unavailable_radio_tracks.is_empty());
     }
 }

@@ -67,7 +67,7 @@ jobs:
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
 
       - name: Install packaging tools
-        uses: cargo-bins/cargo-binstall@b874e25ea559687bec77e281e9b271aa1367b624 # v1.23.0
+        uses: cargo-bins/cargo-binstall@422f3094be6a0843857aa008b499caaf6bce0da8 # v1.24.0
 
       # `just` and `cargo-deb` ship prebuilt binaries that binstall can fetch.
       # `cargo-generate-rpm` does not advertise binstall metadata, so binstall
@@ -127,10 +127,72 @@ jobs:
         with:
           name: packages-${{ matrix.variant }}-${{ matrix.target }}
           path: dist/*
+          overwrite: true
+
+  srpm:
+    name: Build source RPMs
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    # Fedora 44, pinned to the image used for the initial native RPM builds.
+    container:
+      image: registry.fedoraproject.org/fedora@sha256:a19ffd4eae9d5b993feda690cb7da7fa4f33ec6af1f0507a28e6a8fe67718389
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Install source-packaging tools
+        run: dnf install -y git cargo python3 python3-pyyaml rpm-build xz desktop-file-utils ShellCheck perl-Digest-SHA
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Trust the runner-owned checkout
+        # The Fedora container runs as root; the mounted checkout belongs to
+        # the host runner. checkout's temporary HOME does not cover later steps.
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      - name: Check packaging
+        run: |
+          python3 -B -m unittest discover -s packaging/rpm -p 'test_*.py'
+          shellcheck packaging/rpm/build-srpm.sh
+
+      - name: Prepare source RPMs from the release tag
+        run: |
+          if [[ ! "$GITHUB_REF" =~ ^refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Source RPMs require a stable vX.Y.Z release tag."
+            exit 1
+          fi
+          # Fail closed if someone moved the tag after this release started.
+          tag_commit=$(git rev-parse --verify "${GITHUB_REF}^{commit}")
+          checkout_commit=$(git rev-parse --verify HEAD)
+          test "$tag_commit" = "$checkout_commit"
+          bash packaging/rpm/build-srpm.sh "$GITHUB_REF" 1
+
+      - name: Stage source RPMs
+        run: |
+          # Flatten the commit directory so the release's *.rpm globs include
+          # these files in assets, checksums, and both provenance attestations.
+          mkdir -p source-rpms
+          cp target/srpm/*/*.src.rpm source-rpms/
+
+      - name: Upload source RPMs
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: packages-srpm
+          path: source-rpms/*.src.rpm
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 14
 
   release:
     runs-on: ubuntu-latest
-    needs: build
+    needs: [build, srpm]
     permissions:
       contents: write
       id-token: write
@@ -159,9 +221,11 @@ jobs:
             echo "release_name=${TAG}" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Download all artifacts
+      - name: Download release artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
+          # Publish both binary packages and the shared source-RPM artifact.
+          pattern: packages-*
           path: release
           merge-multiple: true
 
@@ -169,7 +233,7 @@ jobs:
         id: hashes
         run: |
           cd release
-          shasum -a 256 *.deb *.rpm *.tar.gz > SHA256SUMS
+          shasum -a 256 -- *.deb *.rpm *.tar.gz > SHA256SUMS
           # Expose base64(SHA256SUMS) for the SLSA provenance generator job.
           echo "hashes=$(base64 -w0 SHA256SUMS)" >> "$GITHUB_OUTPUT"
 
@@ -195,26 +259,19 @@ jobs:
       - name: Install git-cliff
         uses: taiki-e/install-action@d8ae1fa96886bc82c05515b8ac15b41515da2c6d # git-cliff
 
-      - name: Generate release notes from commits
-        run: |
-          set -euo pipefail
-          # Grouping and the catch-all live in cliff.toml, so a commit type
-          # nobody thought about lands under "Other changes" instead of
-          # disappearing — which is how the GPL-3.0 relicense went missing from
-          # the v0.3.2 notes.
-          git-cliff --current --strip header --output RELEASE_NOTES.md
+      - name: Check release-note generation
+        run: python3 -B packaging/rpm/test_release_notes.py
 
-          TAG="${GITHUB_REF#refs/tags/}"
-          PREV=$(git describe --tags --abbrev=0 --match 'v[0-9]*' "${TAG}^" 2>/dev/null || true)
-          if [ -n "$PREV" ]; then
-            printf '\n**Full Changelog**: https://github.com/%s/compare/%s...%s\n' \
-              "$GITHUB_REPOSITORY" "$PREV" "$TAG" >> RELEASE_NOTES.md
-          fi
-          echo '----- generated release notes -----'
+      - name: Generate release notes from published releases
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python3 .github/scripts/release-notes.py \
+            --repository "$GITHUB_REPOSITORY" --tag "$GITHUB_REF_NAME" > RELEASE_NOTES.md
           cat RELEASE_NOTES.md
 
       - name: Create GitHub release
-        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v2
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v2
         with:
           name: ${{ steps.meta.outputs.release_name }}
           draft: false
@@ -248,3 +305,63 @@ jobs:
       base64-subjects: ${{ needs.release.outputs.hashes }}
       upload-assets: true
       upload-tag-name: ${{ github.ref_name }}
+
+  # Keep this in the same workflow: a release created with GITHUB_TOKEN does
+  # not trigger another workflow listening for `release: published`.
+  copr:
+    name: Publish source RPMs to COPR
+    needs: [release, provenance]
+    if: github.repository == 'glima/mare-player' && startsWith(github.ref, 'refs/tags/v') && vars.COPR_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    # Fedora 44, pinned to the image used for the initial native RPM builds.
+    container:
+      image: registry.fedoraproject.org/fedora@sha256:a19ffd4eae9d5b993feda690cb7da7fa4f33ec6af1f0507a28e6a8fe67718389
+    defaults:
+      run:
+        shell: bash
+    concurrency:
+      group: copr-${{ github.ref }}
+      cancel-in-progress: false
+    env:
+      COPR_PROJECT: limachaves/mare-player
+
+    steps:
+      - name: Check publishing credential
+        env:
+          COPR_CONFIG: ${{ secrets.COPR_CONFIG }}
+        run: |
+          if [[ -z "$COPR_CONFIG" ]]; then
+            echo "::error::COPR_ENABLED is true, but the COPR_CONFIG Actions secret is missing."
+            exit 1
+          fi
+
+      - name: Install COPR client
+        run: dnf install -y copr-cli
+
+      - name: Download the published source RPMs
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: packages-srpm
+          path: source-rpms
+
+      - name: Submit both variants to COPR
+        env:
+          COPR_CONFIG: ${{ secrets.COPR_CONFIG }}
+        run: |
+          umask 077
+          config=$(mktemp "$RUNNER_TEMP/copr-config.XXXXXXXX")
+          trap 'rm -f -- "$config"' EXIT
+          printf '%s\n' "$COPR_CONFIG" > "$config"
+          unset COPR_CONFIG
+          # Do not retry automatically: a lost response may still have queued
+          # a build. Inspect COPR before resubmitting after a partial failure.
+          copr-cli --config "$config" build --nowait --enable-net off \
+            "$COPR_PROJECT" source-rpms/*.src.rpm
+          {
+            echo "### COPR source RPMs submitted"
+            echo "Both variants of $GITHUB_REF_NAME were submitted to [$COPR_PROJECT](https://copr.fedorainfracloud.org/coprs/$COPR_PROJECT/)."
+            echo "COPR builds asynchronously for all enabled project targets; this job confirms submission, not build success."
+          } >> "$GITHUB_STEP_SUMMARY"

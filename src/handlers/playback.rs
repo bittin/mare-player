@@ -12,7 +12,7 @@ use cosmic::prelude::*;
 
 use crate::messages::Message;
 use crate::state::AppModel;
-use crate::tidal::client::PlaybackUrl;
+use crate::tidal::client::{PlaybackFailure, PlaybackUrl};
 use crate::tidal::models::Track;
 use crate::tidal::mpris::LoopStatus;
 use crate::tidal::player::{NowPlaying, PlaybackState};
@@ -84,6 +84,7 @@ impl AppModel {
 
         self.playback_position = 0.0;
         self.video_resume_target = None;
+        self.audio_resume_target = None;
         self.loading_progress = 0.0;
         self.playback_state = PlaybackState::Loading;
 
@@ -148,12 +149,9 @@ impl AppModel {
             return Task::perform(
                 async move {
                     let client = client.lock().await;
-                    match client.get_video_hls_url(&video_id).await {
-                        Ok(url) => Ok((track, url)),
-                        Err(e) => Err(e.to_string()),
-                    }
+                    client.get_video_hls_url(&video_id).await.map(|url| (track, url)).map_err(PlaybackFailure::from)
                 },
-                |result| cosmic::Action::App(Message::VideoUrlReceived(result)),
+                move |result| cosmic::Action::App(Message::VideoUrlReceived(version, result)),
             );
         }
 
@@ -165,12 +163,9 @@ impl AppModel {
         Task::perform(
             async move {
                 let client = client.lock().await;
-                match client.get_track_playback_url(&track_id).await {
-                    Ok(url) => Ok((track, url)),
-                    Err(e) => Err(e.to_string()),
-                }
+                client.get_track_playback_url(&track_id).await.map(|url| (track, url)).map_err(PlaybackFailure::from)
             },
-            |result| cosmic::Action::App(Message::PlaybackUrlReceived(result)),
+            move |result| cosmic::Action::App(Message::PlaybackUrlReceived(version, result)),
         )
     }
 
@@ -338,8 +333,12 @@ impl AppModel {
     /// Handle playback URL received
     pub fn handle_playback_url_received(
         &mut self,
-        result: Result<(Track, PlaybackUrl), String>,
+        version: u64,
+        result: Result<(Track, PlaybackUrl), PlaybackFailure>,
     ) -> Task<cosmic::Action<Message>> {
+        if version != self.playback_resolve_version || self.playback_state != PlaybackState::Loading {
+            return Task::none();
+        }
         match result {
             Ok((track, playback_url)) => {
                 if self.is_stale_resolution(&track) {
@@ -347,12 +346,25 @@ impl AppModel {
                 }
                 self.start_gst_audio(track, playback_url)
             }
-            Err(e) => {
-                tracing::error!("Failed to get playback URL: {}", e);
-                self.error_message = Some(format!("Failed to get playback URL: {}", e));
-                Task::none()
+            Err(failure) => self.handle_playback_failure(failure),
+        }
+    }
+
+    /// Only an explicit asset-unavailable response advances the queue. All
+    /// other failures stop and clear loading state without blaming the login.
+    fn handle_playback_failure(&mut self, failure: PlaybackFailure) -> Task<cosmic::Action<Message>> {
+        let title = self.playback_queue.get(self.playback_queue_index).map_or("This item", |track| track.title.as_str());
+        tracing::warn!("Playback resolution for {title}: {failure}");
+        self.error_message = Some(format!("{title}: {failure}"));
+        if failure == PlaybackFailure::Unavailable {
+            // Walk the remaining queue once, regardless of repeat mode. Never
+            // wrap automatically through a queue of unavailable items.
+            let next_index = self.playback_queue_index + 1;
+            if next_index < self.playback_queue.len() {
+                return self.play_track_at_index(next_index);
             }
         }
+        self.handle_stop_playback()
     }
 
     /// True when a resolved URL belongs to a track the user has already moved
@@ -519,7 +531,14 @@ impl AppModel {
 
     /// Handle the resolved HLS URL for a music video: start the GStreamer
     /// pipeline and surface it in the now-playing pane.
-    pub fn handle_video_url_received(&mut self, result: Result<(Track, String), String>) -> Task<cosmic::Action<Message>> {
+    pub fn handle_video_url_received(
+        &mut self,
+        version: u64,
+        result: Result<(Track, String), PlaybackFailure>,
+    ) -> Task<cosmic::Action<Message>> {
+        if version != self.playback_resolve_version || self.playback_state != PlaybackState::Loading {
+            return Task::none();
+        }
         match result {
             Ok((track, url)) => {
                 // Same staleness guard as the audio path: rapid skipping leaves
@@ -592,12 +611,7 @@ impl AppModel {
                     }
                 }
             }
-            Err(e) => {
-                tracing::error!("Failed to resolve video URL: {}", e);
-                self.error_message = Some(format!("Failed to load video: {}", e));
-                self.playback_state = PlaybackState::Stopped;
-                self.now_playing = None;
-            }
+            Err(failure) => return self.handle_playback_failure(failure),
         }
         Task::none()
     }
@@ -735,33 +749,26 @@ impl AppModel {
         // before tearing down playback state.  Reports the listen if it
         // crossed the threshold.
         self.finalize_and_report_play_session();
-        // Popped-out video: kill the child window and stop.
-        if self.video_window.is_some() {
-            self.close_video_window_if_open();
-            self.playback_state = PlaybackState::Stopped;
-            self.now_playing = None;
-            self.playback_position = 0.0;
-            self.visualizer_state.set_active(false);
-            return self.update_mpris_state();
-        }
-        if self.video_player.is_some() {
-            self.stop_video();
-            self.playback_state = PlaybackState::Stopped;
-            self.now_playing = None;
-            self.playback_position = 0.0;
-            self.visualizer_state.set_active(false);
-            self.close_video_window_if_open();
-            return self.update_mpris_state();
-        }
-        // Dropping the audio pipeline sets it to Null.
-        if self.media_player.take().is_some() {
-            self.playback_state = PlaybackState::Stopped;
-            self.now_playing = None;
-            self.playback_position = 0.0;
-            self.visualizer_state.set_active(false);
-            return self.update_mpris_state();
-        }
-        Task::none()
+        // Invalidate pending resolutions even while Loading, when no pipeline
+        // exists yet. A late success or failure must not undo the user's Stop.
+        self.playback_resolve_version = self.playback_resolve_version.wrapping_add(1);
+        self.close_video_window_if_open();
+        self.stop_video();
+        self.media_player = None;
+        self.playback_state = PlaybackState::Stopped;
+        self.now_playing = None;
+        self.now_playing_quality = None;
+        self.playback_position = 0.0;
+        self.loading_progress = 0.0;
+        self.audio_resume_target = None;
+        self.video_resume_target = None;
+        self.current_video_url = None;
+        self.stream_minted_at = None;
+        self.stream_reminted_at = None;
+        self.pending_seek = None;
+        self.seek_debounce_version = self.seek_debounce_version.wrapping_add(1);
+        self.visualizer_state.set_active(false);
+        self.update_mpris_state()
     }
 
     /// Toggle the video pop-out: hand the current video to a separate child
@@ -1191,10 +1198,7 @@ impl AppModel {
         Task::perform(
             async move {
                 let client = client.lock().await;
-                match client.get_track_playback_url(&track_id).await {
-                    Ok(url) => Ok((track, url)),
-                    Err(e) => Err(e.to_string()),
-                }
+                client.get_track_playback_url(&track_id).await.map(|url| (track, url)).map_err(PlaybackFailure::from)
             },
             |result| cosmic::Action::App(Message::PreloadUrlReceived(result)),
         )
@@ -1202,7 +1206,10 @@ impl AppModel {
 
     /// Handle a preload URL response — stage it into the pipeline for gapless
     /// playback (consumed by about-to-finish).
-    pub fn handle_preload_url_received(&mut self, result: Result<(Track, PlaybackUrl), String>) -> Task<cosmic::Action<Message>> {
+    pub fn handle_preload_url_received(
+        &mut self,
+        result: Result<(Track, PlaybackUrl), PlaybackFailure>,
+    ) -> Task<cosmic::Action<Message>> {
         match result {
             Ok((track, playback_url)) => {
                 if let Some(mp) = &self.media_player {
@@ -1349,5 +1356,139 @@ mod stream_lifetime_tests {
     fn a_stream_past_its_hour_is_reminted() {
         assert!(stream_expiring(STREAM_LIFETIME));
         assert!(stream_expiring(Duration::from_secs(3 * 60 * 60)));
+    }
+}
+
+#[cfg(test)]
+mod resolution_tests {
+    use super::{AppModel, LoopStatus, PlaybackFailure, PlaybackState, PlaybackUrl, Track};
+    use cosmic::Application;
+
+    fn app() -> AppModel {
+        // Do not execute startup tasks: these tests exercise synchronous state
+        // transitions, without authentication, D-Bus services or media pipelines.
+        let (mut app, startup) = AppModel::init(cosmic::Core::default(), ());
+        drop(startup);
+        app.playback_queue =
+            ["A", "B", "A"].into_iter().map(|id| Track { id: id.into(), title: id.into(), ..Track::default() }).collect();
+        app.playback_state = PlaybackState::Loading;
+        app.playback_resolve_version = 10;
+        app
+    }
+
+    #[tokio::test]
+    async fn stale_audio_and_video_failures_leave_the_current_request_alone() {
+        let mut app = app();
+        app.playback_queue_index = 1;
+        for failure in [PlaybackFailure::Unavailable, PlaybackFailure::Rejected, PlaybackFailure::Failed("offline".into())] {
+            drop(app.handle_playback_url_received(9, Err(failure.clone())));
+            drop(app.handle_video_url_received(9, Err(failure)));
+            assert_eq!(app.playback_queue_index, 1);
+            assert_eq!(app.playback_state, PlaybackState::Loading);
+            assert!(app.error_message.is_none());
+        }
+    }
+
+    #[tokio::test]
+    async fn revisiting_the_same_track_does_not_accept_an_old_success() {
+        let mut app = app();
+        let first = app.playback_queue[0].clone();
+        drop(app.play_track_at_index(1));
+        drop(app.play_track_at_index(2));
+        drop(app.handle_playback_url_received(
+            10,
+            Ok((first.clone(), PlaybackUrl::Direct("invalid://must-not-play".into(), None, None))),
+        ));
+        drop(app.handle_video_url_received(10, Ok((first, "invalid://must-not-play".into()))));
+        assert_eq!(app.playback_queue_index, 2);
+        assert_eq!(app.playback_state, PlaybackState::Loading);
+        assert!(app.media_player.is_none());
+        assert!(app.video_player.is_none());
+        assert!(app.now_playing.is_none());
+    }
+
+    #[tokio::test]
+    async fn stop_during_loading_invalidates_all_pending_resolutions() {
+        let mut app = app();
+        let track = app.playback_queue[0].clone();
+        app.audio_resume_target = Some(90.0);
+        drop(app.handle_stop_playback());
+        assert_ne!(app.playback_resolve_version, 10);
+        drop(app.handle_playback_url_received(
+            10,
+            Ok((track.clone(), PlaybackUrl::Direct("invalid://must-not-play".into(), None, None))),
+        ));
+        drop(app.handle_video_url_received(10, Ok((track, "invalid://must-not-play".into()))));
+        drop(app.handle_playback_url_received(10, Err(PlaybackFailure::Unavailable)));
+        drop(app.handle_video_url_received(10, Err(PlaybackFailure::Rejected)));
+        assert_eq!(app.playback_state, PlaybackState::Stopped);
+        assert_eq!(app.playback_queue_index, 0);
+        assert!(app.error_message.is_none());
+        assert!(app.audio_resume_target.is_none());
+    }
+
+    #[tokio::test]
+    async fn unavailable_queue_terminates_in_every_repeat_mode() {
+        for mode in [LoopStatus::None, LoopStatus::Track, LoopStatus::Playlist] {
+            for shuffled in [false, true] {
+                let mut app = app();
+                app.loop_status = mode;
+                app.shuffle_enabled = shuffled;
+                for index in 0..app.playback_queue.len() {
+                    app.audio_resume_target = Some(90.0);
+                    let version = app.playback_resolve_version;
+                    drop(app.handle_playback_url_received(version, Err(PlaybackFailure::Unavailable)));
+                    assert!(app.audio_resume_target.is_none());
+                    if index + 1 < app.playback_queue.len() {
+                        assert_eq!(app.playback_queue_index, index + 1);
+                        assert_eq!(app.playback_state, PlaybackState::Loading);
+                    } else {
+                        assert_eq!(app.playback_state, PlaybackState::Stopped);
+                    }
+                }
+                // The last completion cannot restart a stopped queue.
+                let version = app.playback_resolve_version;
+                drop(app.handle_playback_url_received(version, Err(PlaybackFailure::Unavailable)));
+                assert_eq!(app.playback_state, PlaybackState::Stopped);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn an_unavailable_video_uses_the_same_skip_policy() {
+        let mut app = app();
+        app.playback_queue[0].is_video = true;
+        drop(app.handle_video_url_received(10, Err(PlaybackFailure::Unavailable)));
+        assert_eq!(app.playback_queue_index, 1);
+        assert_eq!(app.playback_state, PlaybackState::Loading);
+    }
+
+    #[tokio::test]
+    async fn a_single_unavailable_item_does_not_repeat_forever() {
+        let mut app = app();
+        app.playback_queue.truncate(1);
+        app.loop_status = LoopStatus::Playlist;
+        drop(app.handle_playback_url_received(10, Err(PlaybackFailure::Unavailable)));
+        assert_eq!(app.playback_queue_index, 0);
+        assert_eq!(app.playback_state, PlaybackState::Stopped);
+    }
+
+    #[tokio::test]
+    async fn other_failures_stop_without_advancing_or_retaining_resume_state() {
+        for failure in [PlaybackFailure::Rejected, PlaybackFailure::Failed("offline".into())] {
+            let mut app = app();
+            app.audio_resume_target = Some(90.0);
+            app.playback_position = 90.0;
+            app.loading_progress = 0.5;
+            drop(app.handle_playback_url_received(10, Err(failure)));
+            assert_eq!(app.playback_state, PlaybackState::Stopped);
+            assert_eq!(app.playback_queue_index, 0);
+            assert_eq!(app.playback_position, 0.0);
+            assert_eq!(app.loading_progress, 0.0);
+            assert!(app.now_playing.is_none());
+            assert!(app.now_playing_quality.is_none());
+            assert!(app.audio_resume_target.is_none());
+            assert!(app.error_message.is_some());
+        }
     }
 }

@@ -63,8 +63,9 @@ impl AppModel {
                 .map(|a| PlaybackSource::artist(a.id.clone(), fl!("artist-top-tracks-context", artist = a.name.clone())));
             let top_tracks: Arc<[Track]> = self.selected_artist_top_tracks.clone().into();
             let videos: Arc<[Track]> = self.selected_artist_videos.clone().into();
-            let top_opts = TrackRowOptions { tracks: Arc::clone(&top_tracks), source: source.clone(), ..Default::default() };
-            let video_opts = TrackRowOptions { tracks: Arc::clone(&videos), source, ..Default::default() };
+            let top_opts =
+                TrackRowOptions { tracks: Arc::clone(&top_tracks), source: source.clone(), ..self.track_row_options() };
+            let video_opts = TrackRowOptions { tracks: Arc::clone(&videos), source, ..self.track_row_options() };
 
             let list = cosmic::iced::widget::list::List::new(&self.artist_rows, move |_index, row| {
                 build_artist_row(loaded_images, window_width, &top_tracks, &top_opts, &videos, &video_opts, row)

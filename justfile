@@ -62,6 +62,10 @@ build-rpm: build-release
     strip -s {{ cargo-target-dir / 'release' / video-window-name }}
     cargo generate-rpm
 
+# Prepares both vendored source RPMs for COPR (does not compile or upload)
+build-srpm ref='HEAD' release='1':
+    bash packaging/rpm/build-srpm.sh {{ quote(ref) }} {{ quote(release) }}
+
 # Compiles standalone (no panel applet) with debug profile, renames binary
 # The standalone top-level window can use the GPU, so it keeps the `wgpu`
 # feature (the applet build omits it and renders on tiny_skia — see Cargo.toml).
@@ -443,6 +447,31 @@ fuzz target="" duration="60":
         echo ""
         echo "All fuzz targets passed ✓"
     fi
+
+# Update Nostr mirrors from origin/main and tags (requires nak and local nip34.json)
+mirror-nostr:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [[ -z "${NOSTR_SECRET_KEY:-}" ]]; then
+        # Print the command literally; bunkeruri belongs to the caller's shell.
+        # shellcheck disable=SC2016
+        echo 'Missing bunker URL. Run: NOSTR_SECRET_KEY="$(bunkeruri)" just mirror-nostr' >&2
+        exit 1
+    fi
+    if [[ "$NOSTR_SECRET_KEY" != bunker://* ]]; then
+        echo 'NOSTR_SECRET_KEY must be a bunker:// URL from bunkeruri.' >&2
+        exit 1
+    fi
+    if ! command -v nak >/dev/null 2>&1; then
+        echo 'Missing nak; install the Nostr CLI before mirroring.' >&2
+        exit 1
+    fi
+    if [[ ! -f nip34.json ]]; then
+        echo 'Missing local nip34.json; configure this checkout with nak git init first.' >&2
+        exit 1
+    fi
+    git fetch origin --tags
+    nak git push --tags --no-announcement origin/main:main
 
 # Bump cargo version, create git commit, and create tag (usage: just tag v0.1.0 "Ocean Breeze")
 tag version name="":

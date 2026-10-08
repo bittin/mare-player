@@ -25,7 +25,8 @@ use crate::helpers::format_seconds;
 use crate::messages::Message;
 use crate::state::{AppModel, ViewState};
 use crate::tidal::player::PlaybackState;
-use crate::views::components::{LYRICS_SVG, NOW_PLAYING_ART_SIZE, RADIO_SVG, favorite_icon_handle};
+use crate::views::components::rows::build_track_radio_button;
+use crate::views::components::{LYRICS_SVG, NOW_PLAYING_ART_SIZE, favorite_icon_handle};
 #[cfg(feature = "panel-applet")]
 use crate::views::components::{POPIN_SVG, POPOUT_SVG};
 
@@ -367,15 +368,7 @@ impl AppModel {
         if track.is_video {
             return None;
         }
-        let mut ri = icon::from_svg_bytes(RADIO_SVG);
-        ri.symbolic = true;
-        Some(
-            button::icon(ri)
-                .tooltip(fl!("tooltip-go-to-track-radio"))
-                .padding(4)
-                .on_press(Message::ShowTrackRadio(track.clone()))
-                .into(),
-        )
+        Some(build_track_radio_button(track, &self.unavailable_radio_tracks, false))
     }
 
     /// The now-playing-bar lyrics button, shown only once we've confirmed the

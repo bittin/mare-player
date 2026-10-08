@@ -192,6 +192,30 @@ impl Album {
     }
 }
 
+/// Convert an SDK album summary, retaining optional collection metadata.
+impl From<tidlers::client::models::album::Album> for Album {
+    fn from(a: tidlers::client::models::album::Album) -> Self {
+        let (artist_name, artist_id) = a
+            .artist
+            .map(|artist| (artist.name, Some(artist.id.to_string())))
+            .unwrap_or_else(|| ("Unknown Artist".to_string(), None));
+        Self {
+            id: a.id.to_string(),
+            title: a.title,
+            artist_name,
+            artist_id,
+            num_tracks: a.number_of_tracks.unwrap_or(0),
+            duration: a.duration.unwrap_or(0) as u32,
+            release_date: a.release_date,
+            cover_url: a.cover.as_deref().map(tidal_cover_url),
+            explicit: a.explicit.unwrap_or(false),
+            audio_quality: a.audio_quality,
+            quality_tags: a.media_metadata.map(|metadata| metadata.tags).unwrap_or_default(),
+            review: None,
+        }
+    }
+}
+
 /// Convert from tidlers AlbumResponse type (full album info)
 impl From<tidlers::client::models::album::AlbumResponse> for Album {
     fn from(a: tidlers::client::models::album::AlbumResponse) -> Self {
@@ -754,6 +778,20 @@ pub struct TrackLyrics {
     /// True for languages that render right-to-left (Arabic, Hebrew,
     /// Farsi).  UI should mirror text alignment accordingly.
     pub is_right_to_left: bool,
+}
+
+/// Convert SDK lyrics without conflating absent plain text with absent lyrics.
+/// Timed subtitles remain useful on their own; nonempty plain text keeps its
+/// original whitespace and line breaks.
+impl From<tidlers::client::models::track::LyricsResponse> for TrackLyrics {
+    fn from(lyrics: tidlers::client::models::track::LyricsResponse) -> Self {
+        Self {
+            provider: lyrics.lyrics_provider,
+            plain_text: lyrics.lyrics.filter(|text| !text.trim().is_empty()),
+            lrc_lines: lyrics.subtitles.as_deref().map(parse_lrc).unwrap_or_default(),
+            is_right_to_left: lyrics.right_to_left,
+        }
+    }
 }
 
 impl TrackLyrics {
