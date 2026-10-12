@@ -96,6 +96,12 @@ impl Track {
     }
 }
 
+/// A tidlers artist's id, or `None` for the id-0 "Unknown Artist" sentinel
+/// tidlers substitutes when a playlist entry names no artist at all.
+fn known_artist_id(artist: &tidlers::client::models::artist::Artist) -> Option<String> {
+    (artist.id != 0).then(|| artist.id.to_string())
+}
+
 /// Convert from tidlers Track type (full track response)
 impl From<tidlers::client::models::track::Track> for Track {
     fn from(t: tidlers::client::models::track::Track) -> Self {
@@ -105,14 +111,36 @@ impl From<tidlers::client::models::track::Track> for Track {
             title: t.title,
             duration: t.duration as u32,
             track_number: t.track_number,
+            artist_id: known_artist_id(&t.artist),
             artist_name: t.artist.name,
-            artist_id: Some(t.artist.id.to_string()),
             album_name: album.as_ref().map(|a| a.title.clone()),
             album_id: album.as_ref().map(|a| a.id.to_string()),
-            cover_url: album.as_ref().and_then(|a| a.cover.as_deref()).map(tidal_cover_url),
+            // Album-less playlist entries carry their own artwork in `imageId`.
+            cover_url: album.as_ref().and_then(|a| a.cover.as_deref()).or(t.image_id.as_deref()).map(tidal_cover_url),
             explicit: t.explicit,
             audio_quality: Some(t.audio_quality),
             is_video: false,
+        }
+    }
+}
+
+/// Convert from tidlers Video type (playlist video entries) into a playable
+/// video [`Track`]. Videos have no album; the thumbnail is their `imageId`.
+impl From<tidlers::client::models::video::Video> for Track {
+    fn from(v: tidlers::client::models::video::Video) -> Self {
+        Self {
+            id: v.id.to_string(),
+            title: v.title,
+            duration: v.duration as u32,
+            track_number: v.track_number,
+            artist_id: known_artist_id(&v.artist),
+            artist_name: v.artist.name,
+            album_name: v.album.as_ref().map(|a| a.title.clone()),
+            album_id: v.album.as_ref().map(|a| a.id.to_string()),
+            cover_url: v.image_id.as_deref().map(tidal_cover_url),
+            explicit: v.explicit,
+            audio_quality: None,
+            is_video: true,
         }
     }
 }
