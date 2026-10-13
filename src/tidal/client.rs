@@ -981,7 +981,7 @@ impl TidalAppClient {
         .await
     }
 
-    /// Walk the SDK's pages until exhausted. Offsets count returned entries,
+    /// Walk tidlers' pages until exhausted. Offsets count returned entries,
     /// not the requested page size, so short intermediate pages are not skipped.
     async fn collect_pages<T, F, Fut>(context: &str, mut fetch_page: F) -> TidalResult<Vec<T>>
     where
@@ -1004,6 +1004,33 @@ impl TidalAppClient {
             info!("Fetched {context} page: {} / {} total", items.len(), total);
             if count == 0 || offset >= total {
                 return Ok(items);
+            }
+        }
+    }
+
+    /// Walk cursor-paged tidlers results until a page comes back without a cursor
+    /// (or empty). A page that hands back the cursor it was fetched with would
+    /// loop forever, so that is an error rather than a hang.
+    async fn collect_cursor_pages<T, F, Fut>(context: &str, mut fetch_page: F) -> TidalResult<Vec<T>>
+    where
+        F: FnMut(Option<String>) -> Fut,
+        Fut: std::future::Future<Output = Result<(Vec<T>, Option<String>), tidlers::error::TidalError>>,
+    {
+        let mut cursor = None;
+        let mut items = Vec::new();
+        loop {
+            let (page, next) = fetch_page(cursor.clone()).await.map_err(|e| Self::request_error(context, e))?;
+            let count = page.len();
+            items.extend(page);
+            info!("Fetched {context} page: {} so far", items.len());
+            match next {
+                Some(next) if count > 0 => {
+                    if cursor.as_ref() == Some(&next) {
+                        return Err(TidalError::ParseError(format!("{context} returned the same page cursor twice")));
+                    }
+                    cursor = Some(next);
+                }
+                _ => return Ok(items),
             }
         }
     }
@@ -2340,112 +2367,18 @@ impl TidalAppClient {
     // Followed Artists (Profiles)
     // =========================================================================
 
-    /// Fetch the user's followed/favorite artists from their collection.
-    ///
-    /// Makes a direct HTTP request to the TIDAL v2 collection API, bypassing
-    /// the tidlers `CollectionArtistsResponse` struct which requires a
-    /// `lastModifiedAt` field that the API no longer always returns.
+    /// Fetch every artist the user follows, in the order TIDAL lists them,
+    /// walking its cursor-paged collection 50 at a time.
     pub async fn get_followed_artists(&self) -> TidalResult<Vec<Artist>> {
         self.ensure_valid_token().await?;
-
-        let (access_token, country_code, locale) = {
+        debug!("Getting followed artists (paginated)");
+        let artists = Self::collect_cursor_pages("Followed artists", |cursor| async move {
             let client_guard = self.client.lock().await;
-            let client = client_guard.as_ref().ok_or(TidalError::NotAuthenticated)?;
-
-            let token = client.session.auth.access_token.as_ref().ok_or(TidalError::NotAuthenticated)?.clone();
-
-            let cc = client.user_info.as_ref().map(|u| u.country_code.clone()).unwrap_or_else(|| "US".to_string());
-
-            let loc = client.session.locale.clone();
-
-            // Note: get_followed_artists needs locale which isn't in
-            // AuthTokenContext, so we extract inline here.
-            (token, cc, loc)
-        };
-
-        debug!("Fetching followed artists (raw JSON)");
-
-        let http_client = reqwest::Client::new();
-        let mut artists = Vec::new();
-        let mut cursor: Option<String> = None;
-        let page_limit = 50;
-
-        loop {
-            let mut url = format!(
-                "https://api.tidal.com/v2/my-collection/artists/folders?countryCode={}&locale={}&limit={}&order=DATE&folderId=root",
-                country_code, locale, page_limit
-            );
-            if let Some(ref c) = cursor {
-                url.push_str(&format!("&cursor={}", c));
-            }
-
-            let response = http_client
-                .get(&url)
-                .header(AUTHORIZATION, format!("Bearer {}", access_token))
-                .send()
-                .await
-                .map_err(|e| TidalError::NetworkError(format!("followed artists request failed: {}", e)))?;
-
-            if !response.status().is_success() {
-                let status = response.status();
-                let body = response.text().await.unwrap_or_default();
-                error!("Followed artists request failed: HTTP {} — {}", status, body);
-                return Err(TidalError::RequestFailed(format!("HTTP {}", status)));
-            }
-
-            let body =
-                response.text().await.map_err(|e| TidalError::NetworkError(format!("reading followed artists body: {}", e)))?;
-
-            let parsed: serde_json::Value = serde_json::from_str(&body)
-                .map_err(|e| TidalError::ParseError(format!("parsing followed artists JSON: {}", e)))?;
-
-            let page_count = if let Some(items) = parsed.get("items").and_then(|v| v.as_array()) {
-                for item in items {
-                    if let Some(data) = item.get("data") {
-                        let id = data
-                            .get("id")
-                            .and_then(|v| v.as_u64().map(|n| n.to_string()).or_else(|| v.as_str().map(String::from)))
-                            .unwrap_or_default();
-
-                        let name = data.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
-
-                        let picture_url =
-                            data.get("picture").and_then(|v| v.as_str()).filter(|p| !p.is_empty()).map(tidal_cover_url);
-
-                        let popularity = data.get("popularity").and_then(|v| v.as_u64()).map(|p| p as u32);
-
-                        let roles: Vec<String> = data
-                            .get("artistRoles")
-                            .and_then(|v| v.as_array())
-                            .map(|arr| {
-                                arr.iter().filter_map(|r| r.get("category").and_then(|c| c.as_str()).map(String::from)).collect()
-                            })
-                            .unwrap_or_default();
-
-                        let url = data.get("url").and_then(|v| v.as_str()).map(String::from);
-
-                        if !id.is_empty() && !name.is_empty() {
-                            artists.push(Artist { id, name, picture_url, bio: None, popularity, roles, url });
-                        }
-                    }
-                }
-                items.len()
-            } else {
-                0
-            };
-
-            // Check for cursor-based pagination
-            let next_cursor = parsed.get("cursor").and_then(|v| v.as_str()).map(String::from);
-
-            debug!("Followed artists page: got {} items, cursor: {:?}", page_count, next_cursor);
-
-            // Stop if we got fewer items than the limit (last page) or no cursor
-            if page_count < page_limit || next_cursor.is_none() {
-                break;
-            }
-            cursor = next_cursor;
-        }
-
+            let client = client_guard.as_ref().ok_or(tidlers::error::TidalError::NotAuthenticated)?;
+            let page = client.get_collection_artists(50, cursor).await?;
+            Ok((page.items.into_iter().map(|entry| Artist::from(entry.data)).collect(), page.cursor))
+        })
+        .await?;
         info!("Loaded {} followed artists", artists.len());
         Ok(artists)
     }
@@ -2527,7 +2460,7 @@ mod tests {
         use tidlers::client::models::track::LyricsResponse;
 
         fn convert(value: Value) -> TrackLyrics {
-            let response: LyricsResponse = serde_json::from_value(value).expect("SDK lyrics fixture should deserialize");
+            let response: LyricsResponse = serde_json::from_value(value).expect("tidlers lyrics fixture should deserialize");
             TidalAppClient::lyrics_from_response(Ok(response)).expect("lyrics should convert")
         }
 
@@ -2601,7 +2534,7 @@ mod tests {
         }
 
         #[test]
-        fn sdk_not_found_is_a_normal_empty_result() {
+        fn tidlers_not_found_is_a_normal_empty_result() {
             let lyrics = TidalAppClient::lyrics_from_response(Err(tidlers::error::TidalError::NotFound)).unwrap();
             assert!(lyrics.is_empty());
             assert!(lyrics.provider.is_none());
@@ -2655,11 +2588,11 @@ mod tests {
                     "explicit": true, "audioQuality": "LOSSLESS", "mediaMetadata": {"tags": ["LOSSLESS", "HIRES_LOSSLESS"]}
                 }
             })).collect();
-            let sdk: CollectionFavoriteAlbumsResponse = serde_json::from_value(serde_json::json!({
+            let response: CollectionFavoriteAlbumsResponse = serde_json::from_value(serde_json::json!({
                 "items": items, "offset": offset, "limit": 100, "totalNumberOfItems": total
             }))
-            .expect("SDK favourite-albums fixture should deserialize");
-            sdk.into()
+            .expect("tidlers favourite-albums fixture should deserialize");
+            response.into()
         }
 
         #[tokio::test]
@@ -2701,8 +2634,8 @@ mod tests {
                     "numberOfTracks": null, "duration": null, "explicit": null, "mediaMetadata": null,
                     "audioQuality": "HIGH"}),
             ] {
-                let sdk: tidlers::client::models::album::Album = serde_json::from_value(payload).unwrap();
-                let album = Album::from(sdk);
+                let tidlers_album: tidlers::client::models::album::Album = serde_json::from_value(payload).unwrap();
+                let album = Album::from(tidlers_album);
                 assert_eq!(album.artist_name, "Unknown Artist");
                 assert!(album.artist_id.is_none());
                 assert_eq!(album.num_tracks, 0);
@@ -2715,12 +2648,12 @@ mod tests {
 
         #[test]
         fn explicit_zero_false_and_empty_tags_are_preserved() {
-            let sdk: tidlers::client::models::album::Album = serde_json::from_value(serde_json::json!({
+            let tidlers_album: tidlers::client::models::album::Album = serde_json::from_value(serde_json::json!({
                 "id": 1, "title": "Empty", "numberOfTracks": 0, "duration": 0,
                 "explicit": false, "audioQuality": "HIGH", "mediaMetadata": {"tags": []}
             }))
             .unwrap();
-            let album = Album::from(sdk);
+            let album = Album::from(tidlers_album);
             assert_eq!(album.num_tracks, 0);
             assert_eq!(album.duration, 0);
             assert!(!album.explicit);
@@ -2763,7 +2696,7 @@ mod tests {
         use super::super::{ApiPaginatedResponse, CollectionFavoriteTracksResponse, TidalAppClient, Track};
         use std::future::ready;
 
-        fn sdk_page(offset: i32, total: i32, ids: std::ops::Range<u64>) -> CollectionFavoriteTracksResponse {
+        fn tidlers_page(offset: i32, total: i32, ids: std::ops::Range<u64>) -> CollectionFavoriteTracksResponse {
             let items: Vec<_> = ids
                 .map(|id| {
                     serde_json::json!({
@@ -2785,11 +2718,11 @@ mod tests {
             serde_json::from_value(serde_json::json!({
                 "items": items, "offset": offset, "limit": 100, "totalNumberOfItems": total
             }))
-            .expect("SDK favourites fixture should deserialize")
+            .expect("tidlers favourites fixture should deserialize")
         }
 
         fn page(offset: i32, total: i32, ids: std::ops::Range<u64>) -> ApiPaginatedResponse<Track> {
-            sdk_page(offset, total, ids).into()
+            tidlers_page(offset, total, ids).into()
         }
 
         #[tokio::test]
@@ -2885,13 +2818,122 @@ mod tests {
 
         #[tokio::test]
         async fn a_track_without_an_album_still_converts() {
-            let mut response = sdk_page(0, 1, 1..2);
+            let mut response = tidlers_page(0, 1, 1..2);
             response.items[0].item.album = None;
             let mut response = Some(ApiPaginatedResponse::<Track>::from(response));
             let tracks =
                 TidalAppClient::collect_pages("Favorite tracks", |_, _| ready(Ok(response.take().unwrap()))).await.unwrap();
             assert!(tracks[0].album_id.is_none());
             assert!(tracks[0].cover_url.is_none());
+        }
+    }
+
+    mod followed_artists {
+        use super::super::{Artist, TidalAppClient};
+        use std::future::ready;
+        use tidlers::client::models::collection::artist::CollectionArtistsResponse;
+
+        /// A tidlers page in the shape TIDAL returns: one entry per id, every
+        /// third without a picture, and a cursor unless it is the last page.
+        fn tidlers_page(ids: std::ops::Range<i64>, cursor: Option<&str>) -> CollectionArtistsResponse {
+            let items: Vec<_> = ids
+                .map(|id| {
+                    serde_json::json!({
+                        "trn": format!("trn:artist:{id}"), "itemType": "ARTIST",
+                        "addedAt": "2026-01-01T00:00:00.000+0000",
+                        "lastModifiedAt": "2026-01-01T00:00:00.000+0000",
+                        "name": format!("Artist {id}"), "parent": null,
+                        "data": {
+                            "id": id, "name": format!("Artist {id}"),
+                            "picture": if id % 3 == 2 { None } else { Some("aa-bb") },
+                            "popularity": 42, "doublePopularity": 0.42,
+                            "artistTypes": ["ARTIST"],
+                            "artistRoles": [{"categoryId": -1, "category": "Artist"}, {"categoryId": 1, "category": "Producer"}],
+                            "mixes": {"ARTIST_MIX": "abc"}, "vibrantColor": null,
+                            "selectedAlbumCoverFallback": null, "handle": null, "userId": null,
+                            "url": format!("http://www.tidal.com/artist/{id}"),
+                            "trn": format!("trn:artist:{id}"), "itemType": "ARTIST"
+                        }
+                    })
+                })
+                .collect();
+            serde_json::from_value(serde_json::json!({
+                "lastModifiedAt": "2026-01-01T00:00:00.000+0000", "items": items,
+                "totalNumberOfItems": 5, "cursor": cursor
+            }))
+            .expect("tidlers followed-artists fixture should deserialize")
+        }
+
+        type Page = (Vec<Artist>, Option<String>);
+
+        fn page(ids: std::ops::Range<i64>, cursor: Option<&str>) -> Result<Page, tidlers::error::TidalError> {
+            let page = tidlers_page(ids, cursor);
+            Ok((page.items.into_iter().map(|entry| Artist::from(entry.data)).collect(), page.cursor))
+        }
+
+        #[tokio::test]
+        async fn follows_cursors_to_the_last_page_and_converts_artists() {
+            let mut cursors = Vec::new();
+            let artists = TidalAppClient::collect_cursor_pages("Followed artists", |cursor| {
+                cursors.push(cursor.clone());
+                ready(match cursor.as_deref() {
+                    None => page(0..2, Some("c1")),
+                    Some("c1") => page(2..4, Some("c2")),
+                    Some("c2") => page(4..5, None),
+                    Some(other) => panic!("unexpected cursor {other}"),
+                })
+            })
+            .await
+            .unwrap();
+            assert_eq!(cursors, [None, Some("c1".into()), Some("c2".into())]);
+            assert!(artists.iter().enumerate().all(|(i, a)| a.id == i.to_string()));
+
+            let artist = &artists[0];
+            assert_eq!(artist.name, "Artist 0");
+            assert_eq!(artist.picture_url.as_deref(), Some("https://resources.tidal.com/images/aa/bb/320x320.jpg"));
+            assert_eq!(artist.popularity, Some(42));
+            assert_eq!(artist.roles, ["Artist", "Producer"]);
+            assert_eq!(artist.url.as_deref(), Some("http://www.tidal.com/artist/0"));
+            assert_eq!(artists[2].picture_url, None);
+        }
+
+        #[tokio::test]
+        async fn an_empty_page_stops_even_with_a_cursor() {
+            let mut calls = 0;
+            let artists = TidalAppClient::collect_cursor_pages("Followed artists", |_| {
+                calls += 1;
+                ready(page(0..0, Some("more?")))
+            })
+            .await
+            .unwrap();
+            assert_eq!(calls, 1);
+            assert!(artists.is_empty());
+        }
+
+        #[tokio::test]
+        async fn a_repeated_cursor_fails_instead_of_looping() {
+            let mut calls = 0;
+            let result = TidalAppClient::collect_cursor_pages("Followed artists", |_| {
+                calls += 1;
+                ready(page(0..2, Some("stuck")))
+            })
+            .await;
+            assert_eq!(calls, 2);
+            assert!(result.unwrap_err().to_string().contains("same page cursor twice"));
+        }
+
+        #[tokio::test]
+        async fn a_later_page_failure_does_not_return_a_partial_list() {
+            let result = TidalAppClient::collect_cursor_pages("Followed artists", |cursor| {
+                ready(match cursor {
+                    None => page(0..2, Some("c1")),
+                    Some(_) => Err(tidlers::error::TidalError::Other("private upstream detail".into())),
+                })
+            })
+            .await;
+            let error = result.unwrap_err().to_string();
+            assert!(error.contains("Followed artists"));
+            assert!(!error.contains("private upstream detail"));
         }
     }
 

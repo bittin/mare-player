@@ -1267,7 +1267,7 @@ impl AppModel {
         // for ad-hoc plays (favorites list, history view, MPRIS OpenUri
         // single-track playback) — those still credit royalties and
         // count toward 'Most Listened' aggregates but won't appear in
-        // Recently Played per the SDK source.
+        // Recently Played per TIDAL's own SDK source.
         let (source_type, source_id) = match &self.playback_source {
             Some(s) => {
                 // For Track-kind ad-hoc sources, prefer the live track's id

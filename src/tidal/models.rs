@@ -220,7 +220,7 @@ impl Album {
     }
 }
 
-/// Convert an SDK album summary, retaining optional collection metadata.
+/// Convert a tidlers album summary, retaining optional collection metadata.
 impl From<tidlers::client::models::album::Album> for Album {
     fn from(a: tidlers::client::models::album::Album) -> Self {
         let (artist_name, artist_id) = a
@@ -330,6 +330,21 @@ impl From<tidlers::client::models::artist::ArtistResponse> for Artist {
             picture_url: a.picture.as_deref().map(|p| tidal_cover_url_sized(p, 750)),
             bio: None,
             popularity: Some(a.popularity),
+            roles: a.artist_roles.into_iter().map(|r| r.category).collect(),
+            url: Some(a.url),
+        }
+    }
+}
+
+/// Convert from a tidlers followed-artist entry (the user's collection).
+impl From<tidlers::client::models::collection::artist::CollectionArtistDetails> for Artist {
+    fn from(a: tidlers::client::models::collection::artist::CollectionArtistDetails) -> Self {
+        Self {
+            id: a.id.to_string(),
+            name: a.name,
+            picture_url: a.picture.as_deref().filter(|p| !p.is_empty()).map(tidal_cover_url),
+            bio: None,
+            popularity: u32::try_from(a.popularity).ok(),
             roles: a.artist_roles.into_iter().map(|r| r.category).collect(),
             url: Some(a.url),
         }
@@ -945,7 +960,7 @@ pub struct TrackLyrics {
     pub is_right_to_left: bool,
 }
 
-/// Convert SDK lyrics without conflating absent plain text with absent lyrics.
+/// Convert tidlers lyrics without conflating absent plain text with absent lyrics.
 /// Timed subtitles remain useful on their own; nonempty plain text keeps its
 /// original whitespace and line breaks.
 impl From<tidlers::client::models::track::LyricsResponse> for TrackLyrics {
