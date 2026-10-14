@@ -7,6 +7,10 @@ edition = "2024"
 [package.metadata]
 cargo-fuzz = true
 
+# `branches` is listed only to switch on its `std` feature (see below).
+[package.metadata.cargo-machete]
+ignored = ["branches"]
+
 [dependencies]
 libfuzzer-sys = "0.4"
 
@@ -20,3 +24,12 @@ path = "fuzz_targets/fuzz_lrc_parse.rs"
 test = false
 doc = false
 bench = false
+
+# cargo-fuzz needs nightly (its instrumentation flags are unstable). On
+# nightly, `branches` (pulled in by turso_core with default features off)
+# switches its no-std abort() to `core::intrinsics::abort`, which current
+# nightlies no longer have. Turning on its `std` feature makes it call
+# `std::process::abort` instead. Normal stable builds are unaffected.
+[dependencies.branches]
+version = "0.4"
+features = ["std"]

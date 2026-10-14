@@ -1241,6 +1241,7 @@ dependencies = [
 name = "cosmic-applet-mare-fuzz"
 version = "0.3.4"
 dependencies = [
+ "branches",
  "cosmic-applet-mare",
  "libfuzzer-sys",
 ]
