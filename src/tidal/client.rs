@@ -19,12 +19,12 @@ use super::models::{
     tidal_cover_url, tidal_promo_image_url,
 };
 use base64::{Engine, engine::general_purpose};
-use reqwest::header::AUTHORIZATION;
 use serde::Deserialize;
 use std::collections::HashSet;
 use std::sync::Arc;
 use tidlers::client::models::collection::album::CollectionFavoriteAlbumsResponse;
 use tidlers::client::models::collection::track::CollectionFavoriteTracksResponse;
+use tidlers::client::models::home::{HomeItem, HomeListItem, HomeMixData, HomeShortcutItem};
 use tidlers::client::models::page::{PageModule, PageResponse};
 use tidlers::client::models::playback::{AssetPresentation, PlaybackMode, VideoQuality};
 use tidlers::client::models::playlist::{PlaylistItemsResponse, PlaylistMedia};
@@ -367,6 +367,35 @@ pub struct TidalAppClient {
     /// for gapless), so the note is logged once per track id rather than once
     /// per resolution.
     warned_downgrades: Arc<std::sync::Mutex<HashSet<String>>>,
+}
+
+/// Every mix in the home feed's modules, in feed order, without the
+/// duplicates TIDAL repeats across modules.
+fn home_feed_mixes(modules: Vec<HomeItem>) -> Vec<Mix> {
+    let mut mixes = Vec::new();
+    for module in modules {
+        match module {
+            HomeItem::HomeShortcutList { inner } => mixes.extend(inner.items.into_iter().filter_map(|item| match item {
+                HomeShortcutItem::Mix(mix) => Some(mix.data),
+                _ => None,
+            })),
+            HomeItem::HomeHorizontalList { inner } => mixes.extend(list_mixes(inner.items)),
+            HomeItem::HomeHorizontalListWithContext { inner } => {
+                mixes.extend(list_mixes(inner.items.into_iter().chain(std::iter::once(inner.header))))
+            }
+            HomeItem::HomeVerticalListCard { inner } => mixes.extend(list_mixes(inner.items)),
+            HomeItem::HomeTrackList { inner } => mixes.extend(list_mixes(inner.items)),
+        }
+    }
+    let mut seen = HashSet::new();
+    mixes.into_iter().map(Mix::from).filter(|mix| seen.insert(mix.id.clone())).collect()
+}
+
+fn list_mixes(items: impl IntoIterator<Item = HomeListItem>) -> impl Iterator<Item = HomeMixData> {
+    items.into_iter().filter_map(|item| match item {
+        HomeListItem::Mix(mix) => Some(mix.data),
+        _ => None,
+    })
 }
 
 impl Default for TidalAppClient {
@@ -1880,138 +1909,19 @@ impl TidalAppClient {
     // Mixes & Radio
     // =========================================================================
 
-    /// Fetch the user's personalized mixes from the TIDAL home feed.
-    ///
-    /// Parses the home feed response and extracts all `MixData` items from
-    /// the various list types (ShortcutList, HorizontalList, etc.).
+    /// Fetch the user's personalized mixes from the TIDAL home feed: every mix
+    /// in any module (shortcuts, lists and list headers), each once.
     pub async fn get_mixes(&self) -> TidalResult<Vec<Mix>> {
         self.ensure_valid_token().await?;
-
-        let (access_token, country_code, locale, time_offset) = {
+        debug!("Fetching home feed for mixes");
+        let feed = {
             let client_guard = self.client.lock().await;
             let client = client_guard.as_ref().ok_or(TidalError::NotAuthenticated)?;
-
-            let token = client.session.auth.access_token.as_ref().ok_or(TidalError::NotAuthenticated)?.clone();
-
-            let cc = client.user_info.as_ref().map(|u| u.country_code.clone()).unwrap_or_else(|| "US".to_string());
-
-            let loc = client.session.locale.clone();
-            let to = client.session.time_offset.clone();
-
-            // Note: get_mixes needs locale and time_offset which aren't in
-            // AuthTokenContext, so we extract them inline here.
-            (token, cc, loc, to)
+            client.get_home_feed(20).await.map_err(|e| Self::request_error("Mixes", e))?
         };
-
-        debug!("Fetching home feed for mixes (raw JSON)");
-
-        let http_client = reqwest::Client::new();
-        let url = format!(
-            "https://tidal.com/v2/home/feed/static?countryCode={}&locale={}&limit=20&deviceType=BROWSER&platform=WEB&timeOffset={}",
-            country_code, locale, time_offset
-        );
-
-        let response = http_client
-            .get(&url)
-            .header(AUTHORIZATION, format!("Bearer {}", access_token))
-            .header("x-tidal-client-version", "2026.1.5")
-            .header("User-Agent", "Mozilla/5.0 (Linux; Android 12; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/91.0.4472.114 Safari/537.36")
-            .send()
-            .await
-            .map_err(|e| TidalError::NetworkError(format!("home feed request failed: {}", e)))?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            error!("Home feed request failed: HTTP {} — {}", status, body);
-            return Err(TidalError::RequestFailed(format!("HTTP {}", status)));
-        }
-
-        let body = response.text().await.map_err(|e| TidalError::NetworkError(format!("reading home feed body: {}", e)))?;
-
-        let feed: serde_json::Value =
-            serde_json::from_str(&body).map_err(|e| TidalError::ParseError(format!("parsing home feed JSON: {}", e)))?;
-
-        let mut mixes = Vec::new();
-
-        // Walk through the feed items array and extract any MIX-type entries
-        // from all the different list types (ShortcutList, HorizontalList, etc.)
-        if let Some(items) = feed.get("items").and_then(|v| v.as_array()) {
-            debug!("Home feed has {} top-level items", items.len());
-
-            for section in items {
-                let section_type = section.get("type").and_then(|t| t.as_str()).unwrap_or("UNKNOWN");
-                let section_title = section.get("title").and_then(|t| t.as_str()).unwrap_or("");
-
-                // Gather all sub-items from this section (could be "items",
-                // or "header" for HorizontalListWithContext)
-                let mut sub_items: Vec<&serde_json::Value> = Vec::new();
-
-                if let Some(arr) = section.get("items").and_then(|v| v.as_array()) {
-                    sub_items.extend(arr.iter());
-                }
-                // HorizontalListWithContext has a "header" item too
-                if let Some(header) = section.get("header") {
-                    sub_items.push(header);
-                }
-
-                let mut section_mix_count = 0;
-                for sub in &sub_items {
-                    let item_type = sub.get("type").and_then(|t| t.as_str()).unwrap_or("");
-
-                    if item_type == "MIX"
-                        && let Some(data) = sub.get("data")
-                        && let Some(mix) = Self::parse_mix_from_json(data)
-                    {
-                        mixes.push(mix);
-                        section_mix_count += 1;
-                    }
-                }
-
-                if section_mix_count > 0 {
-                    debug!("Section '{}' ({}): extracted {} mixes", section_title, section_type, section_mix_count);
-                }
-            }
-        }
-
-        // Deduplicate by ID (mixes can appear in multiple sections)
-        let mut seen = std::collections::HashSet::new();
-        mixes.retain(|m| seen.insert(m.id.clone()));
-
+        let mixes = home_feed_mixes(feed.items);
         info!("Found {} unique mixes from home feed", mixes.len());
         Ok(mixes)
-    }
-
-    /// Parse a single Mix from a raw JSON `data` object within the home feed.
-    pub fn parse_mix_from_json(data: &serde_json::Value) -> Option<Mix> {
-        let id = data.get("id").and_then(|v| v.as_str())?.to_string();
-        let mix_type = data.get("type").and_then(|v| v.as_str()).unwrap_or("MIX").to_string();
-
-        let title = data.get("titleTextInfo").and_then(|v| v.get("text")).and_then(|v| v.as_str()).unwrap_or("Mix").to_string();
-
-        let subtitle = data
-            .get("shortSubtitleTextInfo")
-            .and_then(|v| v.get("text"))
-            .and_then(|v| v.as_str())
-            .or_else(|| data.get("subtitleTextInfo").and_then(|v| v.get("text")).and_then(|v| v.as_str()))
-            .unwrap_or("")
-            .to_string();
-
-        // Pick the largest image from mixImages
-        let image_url = data.get("mixImages").and_then(|v| v.as_array()).and_then(|imgs| {
-            imgs.iter()
-                .filter_map(|img| {
-                    let w = img.get("width").and_then(|v| v.as_u64()).unwrap_or(0);
-                    let url = img.get("url").and_then(|v| v.as_str())?;
-                    Some((w, url.to_string()))
-                })
-                .max_by_key(|(w, _)| *w)
-                .map(|(_, url)| url)
-        });
-
-        debug!("Parsed mix from raw JSON: id={}, type={}, title={:?}", id, mix_type, title);
-
-        Some(Mix { id, title, subtitle, mix_type, image_url })
     }
 
     // =========================================================================
@@ -2825,6 +2735,49 @@ mod tests {
                 TidalAppClient::collect_pages("Favorite tracks", |_, _| ready(Ok(response.take().unwrap()))).await.unwrap();
             assert!(tracks[0].album_id.is_none());
             assert!(tracks[0].cover_url.is_none());
+        }
+    }
+
+    mod home_feed_mixes {
+        use super::super::home_feed_mixes;
+        use tidlers::client::models::home::HomeItem;
+
+        fn mix(id: &str) -> serde_json::Value {
+            serde_json::json!({
+                "type": "MIX", "following": false,
+                "data": {
+                    "type": "DAILY_MIX", "countryCode": "US", "updated": 1, "id": id, "isStableId": true,
+                    "artifactIdType": "trackGroupId", "mixImages": [], "sortType": "POPULARITY",
+                    "detailMixImages": [], "titleTextInfo": {"text": id, "color": null},
+                    "subtitleTextInfo": {"text": null, "color": null},
+                    "shortSubtitleTextInfo": {"text": null, "color": null},
+                    "description": {"text": null, "color": null}, "contentBehavior": "UNRESTRICTED"
+                }
+            })
+        }
+
+        fn module(kind: &str, items: Vec<serde_json::Value>, header: Option<serde_json::Value>) -> HomeItem {
+            let mut m = serde_json::json!({
+                "type": kind, "moduleId": kind, "title": kind, "icons": [], "showQuickPlay": false,
+                "viewAll": null, "items": items
+            });
+            if let Some(h) = header {
+                m["header"] = h;
+            }
+            serde_json::from_value(m).expect("home module fixture should deserialize")
+        }
+
+        #[test]
+        fn collects_mixes_from_every_module_kind_once_in_feed_order() {
+            let album = serde_json::json!({"type": "ALBUM", "following": false, "data": {"unexpected": true}});
+            let feed = vec![
+                module("SHORTCUT_LIST", vec![mix("a"), album.clone()], None),
+                module("HORIZONTAL_LIST", vec![mix("b"), mix("a")], None),
+                module("HORIZONTAL_LIST_WITH_CONTEXT", vec![mix("c")], Some(mix("d"))),
+                module("TRACK_LIST", vec![album], None),
+            ];
+            let ids: Vec<String> = home_feed_mixes(feed).into_iter().map(|m| m.id).collect();
+            assert_eq!(ids, ["a", "b", "c", "d"]);
         }
     }
 

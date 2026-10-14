@@ -470,6 +470,20 @@ pub struct Mix {
     pub image_url: Option<String>,
 }
 
+/// Convert a tidlers home-feed mix. The title falls back to "Mix", the
+/// subtitle prefers the short form, and the cover is the widest image.
+impl From<tidlers::client::models::home::HomeMixData> for Mix {
+    fn from(m: tidlers::client::models::home::HomeMixData) -> Self {
+        Self {
+            title: m.title_text_info.text.unwrap_or_else(|| "Mix".to_string()),
+            subtitle: m.short_subtitle_text_info.text.or(m.subtitle_text_info.text).unwrap_or_default(),
+            image_url: m.mix_images.into_iter().max_by_key(|image| image.width).map(|image| image.url),
+            id: m.id,
+            mix_type: m.mix_type,
+        }
+    }
+}
+
 /// Search results container
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SearchResults {
@@ -1251,6 +1265,50 @@ impl StreamQuality {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── Home-feed mix conversion ──────────────────────────────────────
+
+    /// A tidlers home-feed mix with the given texts and image widths.
+    fn home_mix(
+        title: Option<&str>,
+        short_subtitle: Option<&str>,
+        subtitle: Option<&str>,
+        widths: &[u32],
+    ) -> tidlers::client::models::home::HomeMixData {
+        let images: Vec<_> = widths
+            .iter()
+            .map(
+                |w| serde_json::json!({"size": "S", "url": format!("https://images.tidal.com/{w}.jpg"), "width": w, "height": w}),
+            )
+            .collect();
+        serde_json::from_value(serde_json::json!({
+            "type": "DAILY_MIX", "countryCode": "US", "updated": 1, "id": "mix-123", "isStableId": true,
+            "artifactIdType": "trackGroupId", "mixImages": images, "sortType": "POPULARITY", "detailMixImages": [],
+            "titleTextInfo": {"text": title, "color": null},
+            "subtitleTextInfo": {"text": subtitle, "color": null},
+            "shortSubtitleTextInfo": {"text": short_subtitle, "color": null},
+            "description": {"text": null, "color": null}, "contentBehavior": "UNRESTRICTED"
+        }))
+        .expect("home mix fixture should deserialize")
+    }
+
+    #[test]
+    fn home_mix_converts_with_the_widest_image() {
+        let mix = Mix::from(home_mix(Some("My Daily Discovery"), Some("Updated daily"), Some("Long"), &[160, 640, 320]));
+        assert_eq!(mix.id, "mix-123");
+        assert_eq!(mix.mix_type, "DAILY_MIX");
+        assert_eq!(mix.title, "My Daily Discovery");
+        assert_eq!(mix.subtitle, "Updated daily");
+        assert_eq!(mix.image_url.as_deref(), Some("https://images.tidal.com/640.jpg"));
+    }
+
+    #[test]
+    fn home_mix_text_fallbacks() {
+        assert_eq!(Mix::from(home_mix(None, None, None, &[])).title, "Mix");
+        assert_eq!(Mix::from(home_mix(None, None, Some("Fallback subtitle"), &[])).subtitle, "Fallback subtitle");
+        assert_eq!(Mix::from(home_mix(None, None, None, &[])).subtitle, "");
+        assert!(Mix::from(home_mix(None, None, None, &[])).image_url.is_none());
+    }
 
     #[test]
     fn stream_quality_label() {
