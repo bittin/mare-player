@@ -242,15 +242,19 @@ doc *args:
 doc-open: (doc '--open')
 
 # Assemble the project website (site/ plus artwork from resources/) into
-# target/site, exactly as the Pages workflow publishes it. Open
-# target/site/index.html to preview.
+# target/site, exactly as the Pages workflow publishes it. The download
+# table is filled from the latest GitHub release when `gh` can reach it,
+# and falls back to a link to the release page otherwise. Preview with
+# `python3 -m http.server --directory target/site 8000`.
 site out=(cargo-target-dir / 'site'):
     #!/usr/bin/env bash
     set -euo pipefail
     rm -rf "{{ out }}"
     mkdir -p "{{ out }}/assets"
-    cp -r site/. "{{ out }}/"
+    cp site/index.html site/style.css "{{ out }}/"
     cp resources/icon.svg resources/screenshot_applet.png resources/screenshot_standalone.png "{{ out }}/assets/"
+    { gh release view --repo glima/mare-player --json tagName,url,assets 2>/dev/null || true; } \
+        | python3 site/downloads.py "{{ out }}/index.html"
     echo "Site assembled in {{ out }}"
 
 # Run the application for testing purposes

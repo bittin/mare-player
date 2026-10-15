@@ -336,7 +336,8 @@ section { scroll-margin-top: 80px; }
   stroke-linejoin: round;
 }
 
-.install-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 1.4rem; }
+.install-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1.4rem; }
+.install-grid > * { min-width: 0; }
 .install-card h3 { margin-top: 0; }
 .install-card > p { margin-bottom: 1rem; }
 .install-card .note { margin-top: 1rem; font-size: 0.9rem; }
@@ -370,6 +371,23 @@ section { scroll-margin-top: 80px; }
   cursor: pointer;
 }
 .copy:hover { color: var(--gold); border-color: rgba(221, 195, 113, 0.5); }
+.downloads { grid-column: 1 / -1; }
+.table-wrap { overflow-x: auto; scrollbar-width: thin; scrollbar-color: rgba(97, 162, 203, 0.35) transparent; }
+.downloads table { width: 100%; border-collapse: collapse; font-size: 0.95rem; }
+.downloads th, .downloads td { padding: 0.75rem 0.9rem; border-bottom: 1px solid var(--line); text-align: left; white-space: nowrap; }
+.downloads thead th { color: var(--muted); font-size: 0.8rem; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; }
+.downloads tbody th { font-weight: 600; }
+.downloads tbody th small { margin-left: 0.3rem; color: var(--muted); font-weight: 400; }
+.downloads tbody tr:last-child th, .downloads tbody tr:last-child td { border-bottom: 0; }
+.downloads td a {
+  display: inline-block;
+  margin-right: 0.4rem;
+  padding: 0.25rem 0.7rem;
+  border: 1px solid rgba(97, 162, 203, 0.35);
+  border-radius: 999px;
+  font-size: 0.85rem;
+}
+.downloads td a:hover { border-color: var(--gold); }
 .fineprint { margin-top: 1.6rem; text-align: center; color: var(--muted); font-size: 0.9rem; }
 
 .trust-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 1.2rem; }
@@ -401,6 +419,7 @@ section { scroll-margin-top: 80px; }
   .hero-art { min-height: 560px; max-width: 460px; width: 100%; margin: 0 auto; }
   .moon { width: 220px; height: 220px; right: 10%; }
   .feature-grid { grid-template-columns: repeat(2, 1fr); }
+  .install-grid { grid-template-columns: minmax(0, 1fr); }
 }
 
 @media (max-width: 560px) {
