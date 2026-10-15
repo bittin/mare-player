@@ -228,4 +228,8 @@ private_intra_doc_links = "allow"
 
 [dev-dependencies]
 libc = "0.2.180"
+# A throwaway TLS certificate and server for the image cache's download
+# tests, so they exercise the real https-only path.
+rcgen = { version = "0.14", default-features = false, features = ["aws_lc_rs"] }
+rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs", "std"] }
 tempfile = "3.24.0"
