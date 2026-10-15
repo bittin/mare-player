@@ -21,7 +21,8 @@ import sys
 REPO = "https://github.com/glima/mare-player"
 MARKER = "<!-- downloads -->"
 
-VARIANTS = [("mare-player", "Standalone app"), ("cosmic-applet-mare", "Panel applet")]
+# Panel applet first, as in the rest of the page.
+VARIANTS = [("cosmic-applet-mare", "Panel applet"), ("mare-player", "Standalone app")]
 ARCHES = ["x86_64", "aarch64"]
 DEB_ARCH = {"amd64": "x86_64", "arm64": "aarch64"}
 
