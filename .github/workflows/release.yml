@@ -84,6 +84,9 @@ jobs:
           # copy it to the expected name
           if [ "${{ matrix.variant }}" = "standalone" ]; then
             cp target/release/cosmic-applet-mare target/release/${{ matrix.binary }}
+            # The standalone app's own desktop entry and metainfo, used by the
+            # .deb/.rpm assets (Cargo.toml) and the tarball below.
+            sh packaging/standalone-resources.sh resources target/standalone
           else
             # Applet: also build the out-of-process video-window companion
             # (referenced by the applet .deb/.rpm assets and bundled below).
@@ -108,8 +111,12 @@ jobs:
           if [ "${{ matrix.variant }}" = "applet" ]; then
             cp target/release/mare-video-window "$DIR/"
           fi
-          cp resources/app.desktop "$DIR/${{ env.APP_ID }}.desktop"
-          cp resources/app.metainfo.xml "$DIR/${{ env.APP_ID }}.metainfo.xml"
+          META=resources
+          if [ "${{ matrix.variant }}" = "standalone" ]; then
+            META=target/standalone
+          fi
+          cp "$META/app.desktop" "$DIR/${{ env.APP_ID }}.desktop"
+          cp "$META/app.metainfo.xml" "$DIR/${{ env.APP_ID }}.metainfo.xml"
           cp resources/icon.svg "$DIR/${{ env.APP_ID }}.svg"
           cp LICENSE "$DIR/"
           strip -s "$DIR/${{ matrix.binary }}"
@@ -160,7 +167,7 @@ jobs:
       - name: Check packaging
         run: |
           python3 -B -m unittest discover -s packaging/rpm -p 'test_*.py'
-          shellcheck packaging/rpm/build-srpm.sh
+          shellcheck packaging/rpm/build-srpm.sh packaging/standalone-resources.sh
 
       - name: Prepare source RPMs from the release tag
         run: |

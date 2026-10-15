@@ -295,32 +295,15 @@ _install profile:
 
 # Internal: install standalone binary from the given profile plus shared resources.
 
-# Patches the applet .desktop and metainfo.xml files for standalone mode.
+# The desktop entry and metainfo come from packaging/standalone-resources.sh,
+# the same rule the release packages and the COPR spec use.
 [private]
 _install-standalone profile:
     install -Dm0755 {{ cargo-target-dir / profile / standalone-name }} {{ standalone-bin-dst }}
-    sed -e 's|^Exec=cosmic-applet-mare|Exec=mare-player|' \
-        -e 's|^Comment=.*|Comment=Maré Player — TIDAL streaming for COSMIC|' \
-        -e 's|^NoDisplay=true|NoDisplay=false|' \
-        -e '/^X-CosmicApplet=/d' \
-        -e '/^X-CosmicHoverPopup=/d' \
-        resources/app.desktop > {{ desktop-dst }}
-    chmod 644 {{ desktop-dst }}
-    sed -e 's|<summary>.*</summary>|<summary>Maré Player — TIDAL streaming for COSMIC desktop</summary>|' \
-        -e 's|Stream TIDAL from your COSMIC panel\.|Stream TIDAL with|' \
-        -e 's|all without leaving|all from a standalone|' \
-        -e 's|your desktop\.|COSMIC application.|' \
-        -e 's|<binary>cosmic-applet-mare</binary>|<binary>mare-player</binary>|' \
-        -e 's|Maré Player Developers|Maré Player Developers|' \
-        -e '/<keyword>applet<\/keyword>/d' \
-        -e 's|screenshot_applet\.png|screenshot__SWAP.png|' \
-        -e 's|screenshot_standalone\.png|screenshot_applet.png|' \
-        -e 's|screenshot__SWAP\.png|screenshot_standalone.png|' \
-        -e 's|Panel applet with library collection and now-playing bar|__SWAP_CAPTION|' \
-        -e 's|Standalone window showing album detail view|Panel applet with library collection and now-playing bar|' \
-        -e 's|__SWAP_CAPTION|Standalone window showing album detail view|' \
-        resources/app.metainfo.xml > {{ appdata-dst }}
-    chmod 644 {{ appdata-dst }}
+    # A temporary directory, not target/: this usually runs under sudo.
+    d=$(mktemp -d) && sh packaging/standalone-resources.sh resources "$d" \
+        && install -Dm0644 "$d/app.desktop" {{ desktop-dst }} \
+        && install -Dm0644 "$d/app.metainfo.xml" {{ appdata-dst }}; s=$?; rm -rf "$d"; exit $s
     install -Dm0644 resources/icon.svg {{ icon-dst }}
     install -Dm0644 resources/icon.svg {{ icon-symbolic-dst }}
     install -Dm0644 resources/icon.svg {{ icon-scalable-symbolic-dst }}

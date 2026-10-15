@@ -17,6 +17,8 @@ URL:            https://github.com/glima/mare-player
 # Includes registry and Git dependencies from Cargo.lock, plus Cargo's source
 # replacement configuration. No network is needed during the RPM build.
 Source0:        mare-player-%{version}-vendored.tar.xz
+# The current standalone-resources script, so older tags get the same rules.
+Source1:        standalone-resources.sh
 ExclusiveArch:  x86_64 aarch64
 
 BuildRequires:  cargo
@@ -70,20 +72,9 @@ This package installs the standalone window application.
 # Older tags omitted the main category required by the Audio subcategory.
 desktop-file-edit --add-category=AudioVideo resources/app.desktop
 %if !%{applet}
-# Preserve the shared application ID (including the tidal:// URI handler),
-# but make the standalone launcher visible and point it at the correct binary.
-sed -i -e 's|^Exec=cosmic-applet-mare|Exec=mare-player|' \
-    -e 's|^Comment=.*|Comment=Maré Player — TIDAL streaming for COSMIC|' \
-    -e 's|^NoDisplay=true|NoDisplay=false|' \
-    -e '/^X-CosmicApplet=/d' -e '/^X-CosmicHoverPopup=/d' \
-    resources/app.desktop
-sed -i -e 's|<summary>.*</summary>|<summary>TIDAL streaming for the COSMIC desktop</summary>|' \
-    -e 's|Stream TIDAL from your COSMIC panel\.|Stream TIDAL with|' \
-    -e 's|all without leaving|all from a standalone|' \
-    -e 's|your desktop\.|COSMIC application.|' \
-    -e 's|<binary>cosmic-applet-mare</binary>|<binary>mare-player</binary>|' \
-    -e '/<keyword>applet<\/keyword>/d' \
-    resources/app.metainfo.xml
+# The standalone launcher and metadata are derived from the applet's by
+# packaging/standalone-resources.sh, the one rule every package format uses.
+sh %{SOURCE1} resources resources
 %endif
 
 %build
