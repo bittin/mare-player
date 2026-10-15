@@ -241,6 +241,18 @@ doc *args:
 # Build documentation and open in browser
 doc-open: (doc '--open')
 
+# Assemble the project website (site/ plus artwork from resources/) into
+# target/site, exactly as the Pages workflow publishes it. Open
+# target/site/index.html to preview.
+site out=(cargo-target-dir / 'site'):
+    #!/usr/bin/env bash
+    set -euo pipefail
+    rm -rf "{{ out }}"
+    mkdir -p "{{ out }}/assets"
+    cp -r site/. "{{ out }}/"
+    cp resources/icon.svg resources/screenshot_applet.png resources/screenshot_standalone.png "{{ out }}/assets/"
+    echo "Site assembled in {{ out }}"
+
 # Run the application for testing purposes
 run *args:
     env RUST_BACKTRACE=full cargo run --release {{ args }}

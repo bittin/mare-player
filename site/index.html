@@ -1,0 +1,228 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Maré Player — Hi-Res TIDAL for the COSMIC desktop</title>
+  <meta name="description" content="An unofficial TIDAL player for the COSMIC desktop: Hi-Res FLAC, music videos, gapless playback and a real-time spectrum visualizer, as a panel applet or a standalone app.">
+  <meta name="theme-color" content="#0b1430">
+  <meta property="og:type" content="website">
+  <meta property="og:title" content="Maré Player">
+  <meta property="og:description" content="Hi-Res TIDAL, at home on the COSMIC desktop.">
+  <meta property="og:url" content="https://glima.github.io/mare-player/">
+  <meta property="og:image" content="https://glima.github.io/mare-player/assets/screenshot_standalone.png">
+  <link rel="icon" href="assets/icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="sky" aria-hidden="true"></div>
+
+  <header class="nav">
+    <a class="brand" href="#top">
+      <img src="assets/icon.svg" alt="" width="32" height="32">
+      <span>Maré <small>Player</small></span>
+    </a>
+    <nav aria-label="Sections">
+      <a href="#features">Features</a>
+      <a href="#install">Install</a>
+      <a href="#security">Security</a>
+      <a class="nav-gh" href="https://github.com/glima/mare-player">GitHub</a>
+    </nav>
+  </header>
+
+  <main id="top">
+    <section class="hero">
+      <div class="hero-text">
+        <p class="eyebrow">Unofficial TIDAL player for COSMIC™</p>
+        <h1>Hi-Res music,<br><span class="tide">riding the tide.</span></h1>
+        <p class="lead">
+          Maré Player streams TIDAL in lossless and Hi-Res, plays music videos,
+          and lives right in your COSMIC panel — or in a window of its own.
+        </p>
+        <div class="cta">
+          <a class="button primary" href="#install">Install on Fedora</a>
+          <a class="button ghost" href="https://github.com/glima/mare-player">Source on GitHub</a>
+        </div>
+        <ul class="facts">
+          <li>Up to 24-bit / 192 kHz FLAC</li>
+          <li>Panel applet or standalone</li>
+          <li>Free software, GPL-3.0</li>
+        </ul>
+      </div>
+
+      <div class="hero-art">
+        <div class="moon" aria-hidden="true"></div>
+        <figure class="shot shot-window">
+          <img src="assets/screenshot_standalone.png" width="1018" height="1401"
+               alt="The standalone Maré Player window: library menu above a playing music video.">
+        </figure>
+        <figure class="shot shot-applet">
+          <img src="assets/screenshot_applet.png" width="612" height="966"
+               alt="The Maré Player panel applet: library menu above a now-playing bar with album art, transport controls and a spectrum visualizer.">
+        </figure>
+        <div class="spectrum" aria-hidden="true">
+          <span></span><span></span><span></span><span></span><span></span><span></span>
+          <span></span><span></span><span></span><span></span><span></span><span></span>
+          <span></span><span></span><span></span><span></span>
+        </div>
+      </div>
+    </section>
+
+    <svg class="waves" viewBox="0 0 1440 120" preserveAspectRatio="none" aria-hidden="true">
+      <path class="wave wave-back" d="M0 70 C 240 20 480 120 720 70 S 1200 20 1440 70 V120 H0 Z"/>
+      <path class="wave wave-front" d="M0 85 C 240 45 480 125 720 85 S 1200 45 1440 85 V120 H0 Z"/>
+    </svg>
+
+    <section class="modes band">
+      <div class="section-head">
+        <h2>Two ways to listen</h2>
+        <p>The same player, built either way. Pick the one that suits how you work.</p>
+      </div>
+      <div class="mode-grid">
+        <article class="card mode">
+          <h3>Panel applet</h3>
+          <p>A popup from the COSMIC panel, one click away from whatever you are doing. The now-playing bar, controls and visualizer stay in reach.</p>
+          <p class="pkg"><code>cosmic-applet-mare</code></p>
+        </article>
+        <article class="card mode">
+          <h3>Standalone window</h3>
+          <p>A regular application window with room to browse, read lyrics and watch music videos, on COSMIC or any desktop libcosmic runs on.</p>
+          <p class="pkg"><code>mare-player</code></p>
+        </article>
+      </div>
+    </section>
+
+    <section id="features" class="features">
+      <div class="section-head">
+        <h2>Everything you listen with</h2>
+        <p>Your TIDAL library, discovery and playback, native to the desktop.</p>
+      </div>
+      <div class="feature-grid">
+        <article class="card">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12c2-4 4-4 6 0s4 4 6 0 4-4 6 0"/><path d="M3 17c2-3 4-3 6 0s4 3 6 0 4-3 6 0" opacity=".5"/></svg>
+          <h3>Hi-Res audio</h3>
+          <p>FLAC up to 24-bit/192 kHz, played through GStreamer to PipeWire or PulseAudio. Choose Low, High, Lossless or Hi-Res.</p>
+        </article>
+        <article class="card">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="3"/><path d="M10 9.5v5l4.5-2.5z"/></svg>
+          <h3>Music videos</h3>
+          <p>Stream TIDAL's music videos in a theater view with the same controls as the audio bar, inline or in their own window.</p>
+        </article>
+        <article class="card">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12h4l2-5 4 10 2-5h4"/></svg>
+          <h3>Gapless &amp; normalized</h3>
+          <p>The next track is decoded ahead of time for seamless transitions, and replay gain keeps loudness consistent.</p>
+        </article>
+        <article class="card">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 20v-6M9 20V8M13 20v-9M17 20V5M21 20v-4"/></svg>
+          <h3>Spectrum visualizer</h3>
+          <p>A real-time stereo FFT display in the now-playing bar, for tracks and music videos alike.</p>
+        </article>
+        <article class="card">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h12M4 11h16M4 16h9"/><circle cx="19" cy="17" r="2.5"/></svg>
+          <h3>Synced lyrics</h3>
+          <p>Time-synced lyrics that follow the current line, with plain lyrics as a fallback, plus full track credits.</p>
+        </article>
+        <article class="card">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="M15.5 8.5l-2 5-5 2 2-5z"/></svg>
+          <h3>Discovery</h3>
+          <p>Explore TIDAL's curated pages, your mixes, track radio, new releases from artists you follow, and recommendations.</p>
+        </article>
+        <article class="card">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6"/><path d="M15 15l5 5"/></svg>
+          <h3>Library &amp; search</h3>
+          <p>Playlists, albums, artists, favourites and history, with search across TIDAL's catalogue by tracks, artists, albums, playlists and videos.</p>
+        </article>
+        <article class="card">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="3" width="10" height="18" rx="2.5"/><path d="M10 7h4M11 17h2"/></svg>
+          <h3>Media keys &amp; MPRIS</h3>
+          <p>Control playback from desktop media keys, playerctl, KDE Connect or any other MPRIS client.</p>
+        </article>
+        <article class="card">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M13 3L5 13h6l-1 8 8-10h-6z"/></svg>
+          <h3>Instant start</h3>
+          <p>Artwork and library data are cached locally, so your collection appears immediately and refreshes in the background.</p>
+        </article>
+      </div>
+    </section>
+
+    <section id="install" class="install band">
+      <div class="section-head">
+        <h2>Get it</h2>
+        <p>Packages for Fedora, or build it from source anywhere COSMIC runs.</p>
+      </div>
+      <div class="install-grid">
+        <article class="card install-card">
+          <h3>Fedora (COPR)</h3>
+          <p>Fedora 44 and 45, x86_64 and aarch64. Updates arrive with your normal system updates.</p>
+          <div class="code"><pre><code>sudo dnf copr enable limachaves/mare-player
+sudo dnf install mare-player</code></pre><button class="copy" type="button" hidden>Copy</button></div>
+          <p class="note">For the panel applet, install <code>cosmic-applet-mare</code> instead. Pick one: the two packages conflict.</p>
+        </article>
+        <article class="card install-card">
+          <h3>From source</h3>
+          <p>Rust 1.85 or newer and <a href="https://github.com/casey/just">just</a>, plus the GStreamer, D-Bus and libsecret development packages.</p>
+          <div class="code"><pre><code>git clone https://github.com/glima/mare-player.git
+cd mare-player
+just build-release &amp;&amp; just install</code></pre><button class="copy" type="button" hidden>Copy</button></div>
+          <p class="note">Use <code>just build-release-standalone</code> and <code>just install-standalone</code> for the window app. Dependencies per distribution are listed in the <a href="https://github.com/glima/mare-player#dependencies">README</a>.</p>
+        </article>
+      </div>
+      <p class="fineprint">Requires a TIDAL subscription. Hi-Res playback requires a plan that includes it.</p>
+    </section>
+
+    <section id="security" class="security">
+      <div class="section-head">
+        <h2>Built with care</h2>
+        <p>A music player still deserves a careful security model.</p>
+      </div>
+      <div class="trust-grid">
+        <div class="trust">
+          <h3>Your session stays yours</h3>
+          <p>Sign-in uses OAuth in your browser; the session lives in the system keyring, never in files or logs.</p>
+        </div>
+        <div class="trust">
+          <h3>HTTPS only</h3>
+          <p>No listening ports, and every connection is encrypted. Artwork links that aren't HTTPS are refused.</p>
+        </div>
+        <div class="trust">
+          <h3>Verifiable releases</h3>
+          <p>Every release ships checksums and Sigstore-signed provenance, including SLSA level 3, so you can check what you install.</p>
+        </div>
+        <div class="trust">
+          <h3>Checked continuously</h3>
+          <p>Memory-safe Rust, strict lints, CodeQL, dependency audits and OpenSSF Scorecard on every change.</p>
+        </div>
+      </div>
+      <p class="more"><a href="https://github.com/glima/mare-player/blob/main/SECURITY.md">Read the security policy →</a></p>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <div class="footer-brand">
+      <img src="assets/icon.svg" alt="" width="28" height="28">
+      <span>Maré Player is free software under the <a href="https://github.com/glima/mare-player/blob/main/LICENSE">GPL-3.0</a>.</span>
+    </div>
+    <p>Built with <a href="https://github.com/pop-os/libcosmic">libcosmic</a> and <a href="https://codeberg.org/tomkoid/tidlers">tidlers</a>.
+       <a href="https://github.com/glima/mare-player/issues">Report a bug</a> ·
+       <a href="https://github.com/glima/mare-player/blob/main/CONTRIBUTING.md">Contribute</a></p>
+    <p class="legal">TIDAL is a registered trademark of TIDAL Music AS. This is an unofficial application and is not affiliated with or endorsed by TIDAL. COSMIC is a trademark of System76.</p>
+  </footer>
+
+  <script>
+    // Copy buttons are progressive enhancement: without JavaScript (or a
+    // clipboard), the commands are still plain selectable text.
+    if (navigator.clipboard) {
+      for (const button of document.querySelectorAll(".copy")) {
+        button.hidden = false;
+        button.addEventListener("click", async () => {
+          const text = button.previousElementSibling.textContent;
+          await navigator.clipboard.writeText(text);
+          button.textContent = "Copied";
+          setTimeout(() => (button.textContent = "Copy"), 1500);
+        });
+      }
+    }
+  </script>
+</body>
+</html>
