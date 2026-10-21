@@ -70,7 +70,8 @@ chrono = { version = "0.4", features = ["serde"] }
 # URL handling for OAuth
 open = "5"
 
-# HTTP client (for additional API requests not covered by tidlers)
+# HTTP client for artwork downloads (TIDAL API requests all go through tidlers;
+# its errors carry reqwest status codes)
 reqwest = { version = "0.13.1", default-features = false, features = ["json", "rustls"] }
 
 # Random number generation for shuffle

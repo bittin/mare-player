@@ -28,7 +28,7 @@ use crate::tidal::models::{
 };
 use crate::tidal::mpris::{MprisCommand, MprisHandle};
 use crate::tidal::play_history::PlayHistory;
-use crate::tidal::play_reporter::{InProgressPlay, PlayReporter};
+use crate::tidal::play_reporter::InProgressPlay;
 use crate::tidal::player::{NowPlaying, PlaybackState};
 use crate::views::visualizer::VisualizerState;
 use cosmic::widget::image::Handle;
@@ -506,11 +506,10 @@ pub struct AppModel {
     /// Current window width in logical pixels (updated on resize).
     /// Used to scale text truncation limits proportionally.
     pub(crate) window_width: f32,
-    /// Background worker that POSTs `playback_session` events to TIDAL's
-    /// Event Producer so plays show up in Recently Played / count for
-    /// recommendations + royalties.  Shared `Arc` so the playback handler
-    /// can fire `record()` cheaply without holding any other lock.
-    pub(crate) play_reporter: Arc<PlayReporter>,
+    /// tidlers' background worker that reports finished listens to TIDAL,
+    /// so plays show up in Recently Played and count for recommendations
+    /// and royalties.  Queuing never blocks playback.
+    pub(crate) play_reporter: tidlers::client::api::events::PlaybackReporter,
     /// Bookkeeping for the currently-playing track's TIDAL play session.
     /// Opened when a track starts, updated on every tick, finalised and
     /// sent to `play_reporter` when the track ends or is replaced.

@@ -218,7 +218,9 @@ impl cosmic::Application for AppModel {
             #[cfg(not(feature = "panel-applet"))]
             show_volume_popup: false,
             window_width: 0.0,
-            play_reporter: crate::tidal::play_reporter::PlayReporter::spawn(),
+            play_reporter: tidlers::client::api::events::PlaybackReporter::spawn(
+                tidlers::client::models::events::EventClient::tidal_android(),
+            ),
             current_play: None,
             #[cfg(not(feature = "panel-applet"))]
             menu_key_binds: HashMap::new(),

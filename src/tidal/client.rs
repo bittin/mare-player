@@ -22,8 +22,10 @@ use base64::{Engine, engine::general_purpose};
 use serde::Deserialize;
 use std::collections::HashSet;
 use std::sync::Arc;
+use tidlers::client::api::events::PlaybackReporter;
 use tidlers::client::models::collection::album::CollectionFavoriteAlbumsResponse;
 use tidlers::client::models::collection::track::CollectionFavoriteTracksResponse;
+use tidlers::client::models::events::PlaybackSession;
 use tidlers::client::models::home::{HomeItem, HomeListItem, HomeMixData, HomeShortcutItem};
 use tidlers::client::models::page::{PageModule, PageResponse};
 use tidlers::client::models::playback::{AssetPresentation, PlaybackMode, VideoQuality};
@@ -462,16 +464,22 @@ impl TidalAppClient {
         self.auth_manager.state()
     }
 
-    /// Snapshot the current TIDAL access token, if any.
+    /// Queue a finished listen on `reporter`, sent with the session's current
+    /// access token. Returns whether it was queued.
     ///
-    /// Used by `play_reporter` to stamp playback events.  Calls
-    /// `try_lock` on the inner client so callers can grab the token
-    /// from a sync (iced update) context without risking a deadlock
-    /// against an in-flight async API request — if the lock is
-    /// contended, returns `None` and the caller skips reporting.
-    pub fn current_access_token(&self) -> Option<String> {
-        let guard = self.client.try_lock().ok()?;
-        guard.as_ref()?.session.auth.access_token.clone()
+    /// Calls `try_lock` on the inner client so it can run from a sync (iced
+    /// update) context without risking a deadlock against an in-flight async
+    /// API request: if the lock is contended, or there is no signed-in
+    /// session, the listen isn't reported.
+    pub fn report_play(&self, reporter: &PlaybackReporter, session: PlaybackSession) -> bool {
+        let Ok(guard) = self.client.try_lock() else {
+            return false;
+        };
+        let Some(client) = guard.as_ref().filter(|c| c.session.auth.access_token.is_some()) else {
+            return false;
+        };
+        reporter.report(client, session);
+        true
     }
 
     /// Set the audio quality for playback
