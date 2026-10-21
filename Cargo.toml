@@ -72,7 +72,7 @@ open = "5"
 
 # HTTP client for artwork downloads (TIDAL API requests all go through tidlers;
 # its errors carry reqwest status codes)
-reqwest = { version = "0.13.1", default-features = false, features = ["json", "rustls"] }
+reqwest = { version = "0.13.1", default-features = false, features = ["rustls"] }
 
 # Random number generation for shuffle
 rand = "0.10"
