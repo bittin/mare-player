@@ -1,6 +1,6 @@
 [package]
 name = "cosmic-applet-mare"
-version = "0.3.6"
+version = "0.3.7"
 edition = "2024"
 license = "GPL-3.0-only"
 authors = ["Maré Player authors"]
@@ -70,8 +70,9 @@ chrono = { version = "0.4", features = ["serde"] }
 # URL handling for OAuth
 open = "5"
 
-# HTTP client (for additional API requests not covered by tidlers)
-reqwest = { version = "0.13.1", default-features = false, features = ["json", "rustls"] }
+# HTTP client for artwork downloads (TIDAL API requests all go through tidlers;
+# its errors carry reqwest status codes)
+reqwest = { version = "0.13.1", default-features = false, features = ["rustls"] }
 
 # Random number generation for shuffle
 rand = "0.10"
@@ -153,10 +154,12 @@ assets = [
 
 [package.metadata.deb.variants.standalone]
 name = "mare-player"
+# The desktop entry and metainfo come from packaging/standalone-resources.sh,
+# which the release workflow runs into target/standalone first.
 assets = [
     ["target/release/mare-player", "usr/bin/", "755"],
-    ["resources/app.desktop", "usr/share/applications/io.github.cosmic-applet-mare.desktop", "644"],
-    ["resources/app.metainfo.xml", "usr/share/metainfo/io.github.cosmic-applet-mare.metainfo.xml", "644"],
+    ["target/standalone/app.desktop", "usr/share/applications/io.github.cosmic-applet-mare.desktop", "644"],
+    ["target/standalone/app.metainfo.xml", "usr/share/metainfo/io.github.cosmic-applet-mare.metainfo.xml", "644"],
     ["resources/icon.svg", "usr/share/icons/hicolor/scalable/apps/io.github.cosmic-applet-mare.svg", "644"],
     ["LICENSE", "usr/share/doc/mare-player/LICENSE", "644"],
 ]
@@ -184,11 +187,12 @@ gstreamer1-plugins-good = "*"
 # Fusion) are needed for the full TIDAL codec set (AAC/MP3 via libav).
 
 [package.metadata.generate-rpm.variants.standalone]
+# Desktop entry and metainfo: see the .deb standalone variant above.
 name = "mare-player"
 assets = [
     { source = "target/release/mare-player", dest = "/usr/bin/", mode = "755" },
-    { source = "resources/app.desktop", dest = "/usr/share/applications/io.github.cosmic-applet-mare.desktop", mode = "644" },
-    { source = "resources/app.metainfo.xml", dest = "/usr/share/metainfo/io.github.cosmic-applet-mare.metainfo.xml", mode = "644" },
+    { source = "target/standalone/app.desktop", dest = "/usr/share/applications/io.github.cosmic-applet-mare.desktop", mode = "644" },
+    { source = "target/standalone/app.metainfo.xml", dest = "/usr/share/metainfo/io.github.cosmic-applet-mare.metainfo.xml", mode = "644" },
     { source = "resources/icon.svg", dest = "/usr/share/icons/hicolor/scalable/apps/io.github.cosmic-applet-mare.svg", mode = "644" },
     { source = "LICENSE", dest = "/usr/share/doc/mare-player/LICENSE", doc = true, mode = "644" },
 ]
@@ -228,4 +232,8 @@ private_intra_doc_links = "allow"
 
 [dev-dependencies]
 libc = "0.2.180"
+# A throwaway TLS certificate and server for the image cache's download
+# tests, so they exercise the real https-only path.
+rcgen = { version = "0.14", default-features = false, features = ["aws_lc_rs"] }
+rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs", "std"] }
 tempfile = "3.24.0"

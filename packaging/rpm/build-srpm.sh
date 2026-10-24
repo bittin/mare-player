@@ -93,6 +93,10 @@ tar --sort=name --mtime="@$epoch" --owner=0 --group=0 --numeric-owner \
     -cJf "$build/SOURCES/mare-player-$version-vendored.tar.xz" \
     -C "$build" "mare-player-$version"
 
+# Shipped beside the archive so packaging an older tag still applies the
+# current standalone rules (see the spec's Source1).
+cp "$repo/packaging/standalone-resources.sh" "$build/SOURCES/"
+
 for variant in standalone applet; do
     applet=0
     name=mare-player

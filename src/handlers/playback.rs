@@ -1267,7 +1267,7 @@ impl AppModel {
         // for ad-hoc plays (favorites list, history view, MPRIS OpenUri
         // single-track playback) — those still credit royalties and
         // count toward 'Most Listened' aggregates but won't appear in
-        // Recently Played per the SDK source.
+        // Recently Played per TIDAL's own SDK source.
         let (source_type, source_id) = match &self.playback_source {
             Some(s) => {
                 // For Track-kind ad-hoc sources, prefer the live track's id
@@ -1312,23 +1312,15 @@ impl AppModel {
             );
             return;
         }
-        // Snapshot the access token from the TIDAL client.  Uses
-        // `try_lock` internally; if the client lock is contended we
-        // skip reporting this one play rather than block the UI thread.
-        let token = {
-            let client = self.tidal_client.blocking_lock();
-            client.current_access_token()
-        };
-        let Some(token) = token else {
-            tracing::debug!(
-                track = %in_progress.track_id,
-                "no access token available; skipping report",
-            );
-            return;
-        };
-        let end_ts_ms =
-            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
-        self.play_reporter.record(in_progress.finalize(end_ts_ms, token));
+        let track_id = in_progress.track_id.clone();
+        // `report_play` uses `try_lock` on the session; if it is contended
+        // we skip reporting this one play rather than block the UI thread.
+        let queued = self.tidal_client.blocking_lock().report_play(&self.play_reporter, in_progress.finalize());
+        if queued {
+            tracing::info!(track = %track_id, "play reported");
+        } else {
+            tracing::debug!(track = %track_id, "no session available; skipping report");
+        }
     }
 }
 

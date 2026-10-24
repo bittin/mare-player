@@ -1,6 +1,7 @@
 # <img src="resources/icon.svg" width="36" align="absmiddle" /> Maré Player
 
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/glima/mare-player/badge)](https://scorecard.dev/viewer/?uri=github.com/glima/mare-player)
+[![OpenSSF Best Practices](https://www.bestpractices.dev/projects/15509/badge)](https://www.bestpractices.dev/projects/15509)
 [![Codecov](https://codecov.io/gh/glima/mare-player/graph/badge.svg)](https://codecov.io/gh/glima/mare-player)
 [![GitHub Release](https://img.shields.io/github/release/glima/mare-player.svg)](https://github.com/glima/mare-player/releases/latest)
 ![License: GPL-3.0](https://img.shields.io/badge/license-GPL--3.0-blue.svg)

@@ -183,9 +183,12 @@ are deliberately not localized — see `AudioQuality::display_name`.
 1. Make sure `just check` and `just test-matrix` pass locally. CI runs the
    same recipes, so a green local run usually means a green CI run.
 2. Describe what changed and why, and reference the issue if there is one.
-3. Add tests for behaviour that can be tested without a TIDAL account —
-   parsing, models, helpers, state transitions. Anything that needs the API
-   is exercised by hand; say what you tried in the PR.
+3. New functionality comes with tests for whatever can be tested without a
+   TIDAL account: parsing, models, conversions, helpers, state transitions.
+   When code depends on the shape of TIDAL's responses, test it against a
+   fixture trimmed from a real response, with personal data replaced. Views
+   and live network calls don't need automated tests; exercise them by hand
+   and say what you tried in the PR.
 4. Keep the branch rebased on `main`. History is linear; merges are rebase
    merges.
 
@@ -204,10 +207,8 @@ access token if you paste raw log lines — it appears in some requests.
 
 ## Security
 
-Report anything involving credentials, the keyring, or the OAuth flow
-privately through GitHub's [security
-advisories](https://github.com/glima/mare-player/security/advisories/new)
-rather than a public issue.
+Report vulnerabilities privately, as described in [`SECURITY.md`](./SECURITY.md),
+rather than in a public issue.
 
 Never commit a token, a session dump, or a `client_secret`. The OAuth client
 we authenticate as is documented in `src/tidal/client_identity.rs`; its

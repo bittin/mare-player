@@ -23,11 +23,12 @@ use crate::menu::TidalMenuAction;
 use crate::tidal::auth::LoginRequest;
 use crate::tidal::client::TidalAppClient;
 use crate::tidal::models::{
-    Album, Artist, ArtistRow, ExplorePage, ExploreRow, FeedActivity, FeedRow, Mix, Playlist, SearchResults, Track, TrackDetailRow,
+    Album, Artist, ArtistRow, ExplorePage, ExploreRow, FeedActivity, FeedRow, Mix, Playlist, SearchCategory, SearchResults,
+    SearchRow, Track, TrackDetailRow,
 };
 use crate::tidal::mpris::{MprisCommand, MprisHandle};
 use crate::tidal::play_history::PlayHistory;
-use crate::tidal::play_reporter::{InProgressPlay, PlayReporter};
+use crate::tidal::play_reporter::InProgressPlay;
 use crate::tidal::player::{NowPlaying, PlaybackState};
 use crate::views::visualizer::VisualizerState;
 use cosmic::widget::image::Handle;
@@ -229,6 +230,22 @@ pub struct AppModel {
     pub(crate) search_query: String,
     /// Search results
     pub(crate) search_results: Option<SearchResults>,
+    /// Search category being viewed in full; `None` is the Top overview.
+    pub(crate) search_category: Option<SearchCategory>,
+    /// Flattened rows of the search view (see [`SearchResults::rows`]),
+    /// rendered via the virtual `List`. Rebuilt from `search_results`.
+    pub(crate) search_rows: list::Content<SearchRow>,
+    /// Widget identity for the current search row set. Changes when the
+    /// results or category are replaced (so a new list starts at the top),
+    /// but not when a page is appended (so "load more" keeps your place).
+    pub(crate) search_rows_revision: u64,
+    /// Whether a "load more" page fetch for the current category is in flight.
+    pub(crate) search_loading_more: bool,
+    /// Loaded search tracks / videos as shared playback queues for their
+    /// rows (clicking one plays the category from there). Rebuilt with
+    /// `search_rows` so rendering doesn't clone them every frame.
+    pub(crate) search_tracks_arc: Arc<[Track]>,
+    pub(crate) search_videos_arc: Arc<[Track]>,
     /// User playlists
     pub(crate) user_playlists: Vec<Playlist>,
     /// Cached 2×2 album-art grid thumbnails for playlists (UUID -> image handle)
@@ -489,11 +506,10 @@ pub struct AppModel {
     /// Current window width in logical pixels (updated on resize).
     /// Used to scale text truncation limits proportionally.
     pub(crate) window_width: f32,
-    /// Background worker that POSTs `playback_session` events to TIDAL's
-    /// Event Producer so plays show up in Recently Played / count for
-    /// recommendations + royalties.  Shared `Arc` so the playback handler
-    /// can fire `record()` cheaply without holding any other lock.
-    pub(crate) play_reporter: Arc<PlayReporter>,
+    /// tidlers' background worker that reports finished listens to TIDAL,
+    /// so plays show up in Recently Played and count for recommendations
+    /// and royalties.  Queuing never blocks playback.
+    pub(crate) play_reporter: tidlers::client::api::events::PlaybackReporter,
     /// Bookkeeping for the currently-playing track's TIDAL play session.
     /// Opened when a track starts, updated on every tick, finalised and
     /// sent to `play_reporter` when the track ends or is replaced.

@@ -34,40 +34,22 @@
 //! ## Why the play reporter needs it
 //!
 //! `playback_session` events carry a `client` object describing the app that
-//! played the track, and it describes the same client the token belongs to:
-//! an Android phone client, reported with a `deviceType` of `phone`.
-//! [`play_reporter`](super::play_reporter) reads these fields from here rather
-//! than keeping constants of its own.
+//! played the track, and it has to describe the same client the token belongs
+//! to. Maré reports with tidlers' `EventClient::tidal_android()`, which tidlers
+//! keeps next to those same PKCE credentials: an Android phone client, so
+//! plays reach Recently Played.
 
 use tracing::warn;
 
-/// The OAuth client Maré Player authenticates as, and the identity it reports
-/// with playback events.
+/// The OAuth client Maré Player authenticates as, and whose identity it
+/// reports with playback events.
 pub struct ClientIdentity {
     /// Public OAuth client id. Must match tidlers' PKCE config.
     pub client_id: &'static str,
-    /// `app-name` header on playback events.
-    pub app_name: &'static str,
-    /// `app-version` header / `client.version` on playback events.
-    pub app_version: &'static str,
-    /// `os-name` header / `client.platform` on playback events.
-    pub platform: &'static str,
-    /// `client.deviceType` on playback events.
-    pub device_type: &'static str,
 }
 
 /// TIDAL's Android mobile client — see the module docs for why this one.
-///
-/// `app_version` is the version TIDAL itself reports for this client id: the
-/// token response names it `TIDAL_Android_2.87.0`, logged at DEBUG on every
-/// sign-in.
-pub const TIDAL_CLIENT: ClientIdentity = ClientIdentity {
-    client_id: "6BDSRdpK9hqEBTgU",
-    app_name: "TIDAL",
-    app_version: "2.87.0",
-    platform: "android",
-    device_type: "phone",
-};
+pub const TIDAL_CLIENT: ClientIdentity = ClientIdentity { client_id: "6BDSRdpK9hqEBTgU" };
 
 /// Warn when the session we hold isn't the client the constants above describe
 /// — e.g. because a tidlers upgrade changed its embedded PKCE client.

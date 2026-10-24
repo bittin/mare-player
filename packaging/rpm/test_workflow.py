@@ -12,6 +12,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import tempfile
+import tomllib
 import unittest
 
 import yaml
@@ -281,6 +282,77 @@ sys.exit(int(os.environ["MOCK_EXIT"]))
                 self.assertEqual((root / "summary.md").exists(), exit_code == 0)
                 if exit_code == 0:
                     self.assertIn("not build success", (root / "summary.md").read_text())
+
+
+class StandaloneMetadataTests(unittest.TestCase):
+    """The standalone release packages must not ship the applet's desktop entry.
+
+    v0.3.7's standalone .deb, .rpm and tarball installed resources/app.desktop
+    unchanged: hidden from launchers (NoDisplay=true) and launching
+    cosmic-applet-mare, which those packages don't contain.
+    """
+
+    BUILD = WORKFLOW["jobs"]["build"]
+
+    def tarball(self, root, variant, binary):
+        script = snippet("Prepare tarball", self.BUILD)
+        for key, value in {"variant": variant, "binary": binary, "pkg_name": binary}.items():
+            script = script.replace("${{ matrix.%s }}" % key, value)
+        script = script.replace("${{ env.APP_ID }}", WORKFLOW["env"]["APP_ID"])
+        result = run(script, root)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        extracted = root / "extracted" / variant
+        extracted.mkdir(parents=True)
+        tarball = next(root.glob(f"{binary}-*.tar.gz"))
+        subprocess.run(["tar", "-xzf", str(tarball), "-C", str(extracted)], check=True)
+        return extracted / binary
+
+    def test_tarballs_ship_each_variants_own_desktop_entry(self):
+        build = snippet("Build release binary", self.BUILD)
+        self.assertIn("sh packaging/standalone-resources.sh resources target/standalone", build)
+        app_id = WORKFLOW["env"]["APP_ID"]
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for tree in ("resources", "packaging"):
+                shutil.copytree(ROOT / tree, root / tree)
+            shutil.copyfile(ROOT / "LICENSE", root / "LICENSE")
+            release = root / "target/release"
+            release.mkdir(parents=True)
+            # Real ELF files, because the step strips them.
+            for binary in ("mare-player", "cosmic-applet-mare", "mare-video-window"):
+                shutil.copyfile(shutil.which("true"), release / binary)
+            # The metadata half of the standalone build step.
+            result = run("sh packaging/standalone-resources.sh resources target/standalone", root)
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+            for variant, binary, applet in (("standalone", "mare-player", False),
+                                            ("applet", "cosmic-applet-mare", True)):
+                with self.subTest(variant=variant):
+                    contents = self.tarball(root, variant, binary)
+                    desktop = (contents / f"{app_id}.desktop").read_text()
+                    self.assertIn(f"Exec={binary} %u", desktop)
+                    self.assertIn(f"NoDisplay={str(applet).lower()}", desktop)
+                    self.assertEqual("X-CosmicApplet=true" in desktop, applet)
+                    self.assertIn("MimeType=x-scheme-handler/tidal;", desktop)
+                    metainfo = (contents / f"{app_id}.metainfo.xml").read_text()
+                    self.assertIn(f"<binary>{binary}</binary>", metainfo)
+                    self.assertEqual((contents / "mare-video-window").exists(), applet)
+
+    def test_standalone_packages_take_the_generated_metadata(self):
+        manifest = tomllib.loads((ROOT / "Cargo.toml").read_text())["package"]["metadata"]
+        deb = manifest["deb"]
+        rpm = manifest["generate-rpm"]
+        sources = {
+            "deb applet": [asset[0] for asset in deb["assets"]],
+            "deb standalone": [asset[0] for asset in deb["variants"]["standalone"]["assets"]],
+            "rpm applet": [asset["source"] for asset in rpm["assets"]],
+            "rpm standalone": [asset["source"] for asset in rpm["variants"]["standalone"]["assets"]],
+        }
+        for package, paths in sources.items():
+            with self.subTest(package=package):
+                folder = "target/standalone" if package.endswith("standalone") else "resources"
+                self.assertIn(f"{folder}/app.desktop", paths)
+                self.assertIn(f"{folder}/app.metainfo.xml", paths)
 
 
 if __name__ == "__main__":

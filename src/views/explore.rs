@@ -149,7 +149,9 @@ mod tests {
     /// renderer lets the List regression run without a display server or GPU.
     struct Probe {
         height: f32,
-        nonce: u64,
+        /// Stored as the widget's tree state, so a test can tell which
+        /// probe's state survived a diff.
+        marker: u64,
         draws: Rc<RefCell<Vec<Rectangle>>>,
     }
 
@@ -163,7 +165,7 @@ mod tests {
         }
 
         fn state(&self) -> widget::tree::State {
-            widget::tree::State::new(self.nonce)
+            widget::tree::State::new(self.marker)
         }
 
         fn layout(&mut self, _tree: &mut widget::Tree, _renderer: &Renderer, _limits: &layout::Limits) -> layout::Node {
@@ -184,11 +186,11 @@ mod tests {
         }
     }
 
-    fn keyed_probe(revision: u64, nonce: u64) -> cosmic::Element<'static, Message> {
-        explore_page_content(revision, cosmic::Element::new(Probe { height: 56.0, nonce, draws: Rc::default() }))
+    fn keyed_probe(revision: u64, marker: u64) -> cosmic::Element<'static, Message> {
+        explore_page_content(revision, cosmic::Element::new(Probe { height: 56.0, marker, draws: Rc::default() }))
     }
 
-    fn probe_nonce(tree: &widget::Tree) -> u64 {
+    fn probe_marker(tree: &widget::Tree) -> u64 {
         *tree.children[0].state.downcast_ref::<u64>()
     }
 
@@ -196,15 +198,15 @@ mod tests {
     fn page_identity_replaces_the_subtree_without_an_empty_frame() {
         let old = keyed_probe(1, 100);
         let mut tree = widget::Tree::new(old.as_widget());
-        assert_eq!(probe_nonce(&tree), 100);
+        assert_eq!(probe_marker(&tree), 100);
 
         let mut redraw = keyed_probe(1, 200);
         tree.diff(redraw.as_widget_mut());
-        assert_eq!(probe_nonce(&tree), 100, "artwork redraw must retain the existing subtree");
+        assert_eq!(probe_marker(&tree), 100, "artwork redraw must retain the existing subtree");
 
         let mut new_page = keyed_probe(2, 300);
         tree.diff(new_page.as_widget_mut());
-        assert_eq!(probe_nonce(&tree), 300, "page replacement must discard the previous subtree");
+        assert_eq!(probe_marker(&tree), 300, "page replacement must discard the previous subtree");
     }
 
     #[test]
@@ -214,18 +216,18 @@ mod tests {
         widget::tree::NAMED.with(|states| *states.borrow_mut() = tree.take_all_named());
         let mut redraw = keyed_probe(1, 200);
         tree.diff(redraw.as_widget_mut());
-        assert_eq!(probe_nonce(&tree), 100);
+        assert_eq!(probe_marker(&tree), 100);
         widget::tree::NAMED.with(|states| *states.borrow_mut() = tree.take_all_named());
         let mut new_page = keyed_probe(2, 300);
         tree.diff(new_page.as_widget_mut());
-        assert_eq!(probe_nonce(&tree), 300);
+        assert_eq!(probe_marker(&tree), 300);
         widget::tree::NAMED.with(|states| states.borrow_mut().clear());
     }
 
     type HeadlessElement<'a> = cosmic::iced::core::Element<'a, (), (), ()>;
 
     fn probe_list<'a>(content: &'a Content<f32>, draws: Rc<RefCell<Vec<Rectangle>>>) -> HeadlessElement<'a> {
-        List::new(content, move |_index, height| HeadlessElement::new(Probe { height: *height, nonce: 0, draws: draws.clone() }))
+        List::new(content, move |_index, height| HeadlessElement::new(Probe { height: *height, marker: 0, draws: draws.clone() }))
             .into()
     }
 
@@ -294,6 +296,47 @@ mod tests {
         let (app, startup) = AppModel::init(cosmic::Core::default(), ());
         drop(startup);
         app
+    }
+
+    /// Paging (search "load more") must edit `Content` in place rather than
+    /// replace it, because it keeps the list's widget identity: the control
+    /// shows a replaced `Content` in a reused tree drawing with a stale row
+    /// height, while incremental remove/push lays out correctly.
+    #[test]
+    fn incremental_appends_keep_a_reused_list_tree_contiguous() {
+        let rows_after_append = |incremental: bool| {
+            // Two 56px rows, then a 40px "load more" row.
+            let mut content: Content<f32> = std::iter::repeat_n(56.0, 2).chain([40.0]).collect();
+            let draws = Rc::new(RefCell::new(Vec::new()));
+            let mut old = probe_list(&content, draws.clone());
+            let mut tree = widget::Tree::new(old.as_widget());
+            for _ in 0..4 {
+                frame(&mut old, &mut tree, &draws);
+            }
+            drop(old);
+            if incremental {
+                content.remove(2);
+                (0..50).for_each(|_| content.push(56.0));
+                content.push(40.0);
+            } else {
+                content = std::iter::repeat_n(56.0, 52).chain([40.0]).collect();
+            }
+            let mut appended = probe_list(&content, draws.clone());
+            tree.diff(appended.as_widget_mut());
+            for _ in 0..6 {
+                frame(&mut appended, &mut tree, &draws);
+            }
+            draws.take()
+        };
+        let contiguous = |rows: &[Rectangle]| rows.windows(2).all(|r| (r[1].y - r[0].y - 56.0).abs() < 0.01);
+
+        let replaced = rows_after_append(false);
+        assert!(replaced.len() > 3);
+        assert!(!contiguous(&replaced), "control: replacing Content in a reused List tree must reproduce the bug");
+
+        let incremental = rows_after_append(true);
+        assert!(incremental.len() > 3);
+        assert!(contiguous(&incremental));
     }
 
     fn root_page() -> ExplorePage {

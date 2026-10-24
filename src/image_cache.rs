@@ -195,16 +195,10 @@ impl ImageCache {
     /// Whether a URL may be fetched.
     ///
     /// Artwork URLs arrive from TIDAL's API responses, so this is the last
-    /// point where a hostile one can be turned away: `https://` only, in
-    /// anything that ships. The loopback exemption exists for the tests
-    /// below, which serve PNGs from a local server, and is compiled out of
-    /// release builds — otherwise an API response naming `http://127.0.0.1:…`
-    /// would have the player fetch from a service on the user's own machine.
+    /// point where a hostile one can be turned away: `https://` only. The
+    /// tests fetch from a local HTTPS server rather than relaxing the rule.
     fn is_fetchable(url: &str) -> bool {
-        if url.starts_with("https://") {
-            return true;
-        }
-        cfg!(test) && (url.starts_with("http://127.0.0.1") || url.starts_with("http://localhost"))
+        url.starts_with("https://")
     }
 
     /// Download an image from a URL
@@ -358,8 +352,44 @@ mod tests {
     use super::*;
     use std::io::{Read, Write};
     use std::net::TcpListener;
+    use std::sync::OnceLock;
 
-    // ── helpers ──────────────────────────────────────────────────────────
+    // ── helpers ──────────────────────────────────────────────────────────────────────────
+
+    /// A throwaway TLS identity for `localhost`, generated once per test run:
+    /// the local servers present it, and the test client trusts it. Nothing
+    /// is written to disk or committed.
+    struct TestTls {
+        server: Arc<rustls::ServerConfig>,
+        root: reqwest::Certificate,
+    }
+
+    fn test_tls() -> &'static TestTls {
+        static TLS: OnceLock<TestTls> = OnceLock::new();
+        TLS.get_or_init(|| {
+            let rcgen::CertifiedKey { cert, signing_key } =
+                rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).expect("generate test certificate");
+            let der = cert.der().clone();
+            let key = rustls::pki_types::PrivatePkcs8KeyDer::from(signing_key.serialize_der());
+            let server = rustls::ServerConfig::builder_with_provider(Arc::new(rustls::crypto::aws_lc_rs::default_provider()))
+                .with_safe_default_protocol_versions()
+                .expect("TLS protocol versions")
+                .with_no_client_auth()
+                .with_single_cert(vec![der.clone()], key.into())
+                .expect("TLS server config");
+            TestTls { server: Arc::new(server), root: reqwest::Certificate::from_der(&der).expect("test root certificate") }
+        })
+    }
+
+    /// A client like the production one, but trusting only the test
+    /// certificate and sending `localhost` to the loopback interface.
+    fn test_client() -> reqwest::Client {
+        reqwest::Client::builder()
+            .tls_certs_only([test_tls().root.clone()])
+            .resolve("localhost", std::net::SocketAddr::from(([127, 0, 0, 1], 0)))
+            .build()
+            .expect("test HTTPS client")
+    }
 
     /// Build an `ImageCache` whose disk tier is an in-memory cache database,
     /// so tests are isolated and never touch the real XDG cache or filesystem.
@@ -367,7 +397,7 @@ mod tests {
     async fn temp_cache(max_memory_bytes: u64) -> ImageCache {
         let cache = ImageCache {
             memory_cache: Arc::new(RwLock::new(HashMap::new())),
-            client: reqwest::Client::new(),
+            client: test_client(),
             max_memory_bytes,
             max_disk_bytes: 50 * 1024 * 1024,
             db: Arc::new(OnceCell::new()),
@@ -386,52 +416,42 @@ mod tests {
         buf
     }
 
-    /// Spawn a one-shot HTTP server that responds with the given body
-    /// and content type. Returns `(url, port)`.
-    fn spawn_http_server(body: Vec<u8>, content_type: &str) -> (String, u16) {
+    /// Spawn a one-shot HTTPS server on loopback that answers the first
+    /// request with `response` (status line, headers and body) and closes.
+    /// Returns the URL to fetch.
+    fn spawn_https_server(response: Vec<u8>) -> String {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
-        let url = format!("http://127.0.0.1:{}/image.png", port);
-        let ct = content_type.to_string();
+        let config = Arc::clone(&test_tls().server);
 
         std::thread::spawn(move || {
-            if let Ok((mut stream, _)) = listener.accept() {
+            if let Ok((tcp, _)) = listener.accept() {
+                let mut tls = rustls::StreamOwned::new(rustls::ServerConnection::new(config).unwrap(), tcp);
                 let mut req = [0u8; 4096];
-                let _ = stream.read(&mut req);
-                let header = format!(
-                    "HTTP/1.1 200 OK\r\n\
-                     Content-Type: {}\r\n\
-                     Content-Length: {}\r\n\
-                     Connection: close\r\n\r\n",
-                    ct,
-                    body.len()
-                );
-                let _ = stream.write_all(header.as_bytes());
-                let _ = stream.write_all(&body);
-                let _ = stream.flush();
+                let _ = tls.read(&mut req);
+                let _ = tls.write_all(&response);
+                tls.conn.send_close_notify();
+                let _ = tls.flush();
             }
         });
 
-        (url, port)
+        format!("https://localhost:{port}/image.png")
     }
 
-    /// Spawn a one-shot HTTP server that returns the given HTTP status.
-    fn spawn_http_error(status: u16) -> (String, u16) {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let port = listener.local_addr().unwrap().port();
-        let url = format!("http://127.0.0.1:{}/image.png", port);
+    /// Serve `body` with the given content type, once.
+    fn spawn_image_server(body: Vec<u8>, content_type: &str) -> String {
+        let mut response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len()
+        )
+        .into_bytes();
+        response.extend(body);
+        spawn_https_server(response)
+    }
 
-        std::thread::spawn(move || {
-            if let Ok((mut stream, _)) = listener.accept() {
-                let mut req = [0u8; 4096];
-                let _ = stream.read(&mut req);
-                let resp = format!("HTTP/1.1 {} Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n", status);
-                let _ = stream.write_all(resp.as_bytes());
-                let _ = stream.flush();
-            }
-        });
-
-        (url, port)
+    /// Answer once with the given HTTP status and no body.
+    fn spawn_status_server(status: u16) -> String {
+        spawn_https_server(format!("HTTP/1.1 {status} Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").into_bytes())
     }
 
     // ── constructors ────────────────────────────────────────────────────
@@ -471,9 +491,9 @@ mod tests {
     async fn test_add_to_memory_cache_basic() {
         let cache = temp_cache(1024 * 1024).await;
         let img = CachedImage { data: Arc::new(vec![1, 2, 3, 4]) };
-        cache.add_to_memory_cache("http://a.test/1.png", img).await;
+        cache.add_to_memory_cache("https://a.test/1.png", img).await;
         let mem = cache.memory_cache.read().await;
-        assert_eq!(mem.get("http://a.test/1.png").unwrap().data.len(), 4);
+        assert_eq!(mem.get("https://a.test/1.png").unwrap().data.len(), 4);
     }
 
     #[tokio::test]
@@ -482,10 +502,10 @@ mod tests {
         let cache = temp_cache(20).await;
         for i in 0..3u8 {
             let img = CachedImage { data: Arc::new(vec![i; 8]) };
-            cache.add_to_memory_cache(&format!("http://a.test/{}.png", i), img).await;
+            cache.add_to_memory_cache(&format!("https://a.test/{}.png", i), img).await;
         }
         let mem = cache.memory_cache.read().await;
-        assert!(mem.contains_key("http://a.test/2.png"));
+        assert!(mem.contains_key("https://a.test/2.png"));
         let total: u64 = mem.values().map(|v| v.data.len() as u64).sum();
         assert!(total <= 20);
     }
@@ -494,11 +514,11 @@ mod tests {
     async fn test_add_to_memory_cache_replaces_same_key() {
         let cache = temp_cache(1024 * 1024).await;
         for sz in [10usize, 20] {
-            cache.add_to_memory_cache("http://a.test/same.png", CachedImage { data: Arc::new(vec![0u8; sz]) }).await;
+            cache.add_to_memory_cache("https://a.test/same.png", CachedImage { data: Arc::new(vec![0u8; sz]) }).await;
         }
         let mem = cache.memory_cache.read().await;
         assert_eq!(mem.len(), 1);
-        assert_eq!(mem.get("http://a.test/same.png").unwrap().data.len(), 20);
+        assert_eq!(mem.get("https://a.test/same.png").unwrap().data.len(), 20);
     }
 
     // ── db disk tier (save_to_disk / load_from_disk) ────────────────────
@@ -553,7 +573,7 @@ mod tests {
     // ── is_fetchable ─────────────────────────────────────────────────────
 
     #[test]
-    fn is_fetchable_accepts_https_only_outside_tests() {
+    fn is_fetchable_accepts_https_only() {
         assert!(ImageCache::is_fetchable("https://resources.tidal.com/images/x/320x320.jpg"));
         // Artwork URLs come from API responses; these are the shapes a
         // hostile one would take.
@@ -563,13 +583,13 @@ mod tests {
         assert!(!ImageCache::is_fetchable("//example.test/x.png"));
     }
 
-    /// The loopback exemption is `cfg(test)`-only, which is why the tests
-    /// below can serve PNGs over plain HTTP while a release build cannot be
-    /// talked into fetching from a service on the user's machine.
+    /// Plain HTTP to the user's own machine is refused like any other: an
+    /// API response naming `http://127.0.0.1:…` must not make the player
+    /// fetch from a local service. The tests use a local HTTPS server.
     #[test]
-    fn loopback_http_is_a_test_only_allowance() {
-        assert_eq!(ImageCache::is_fetchable("http://127.0.0.1:8080/x.png"), cfg!(test));
-        assert_eq!(ImageCache::is_fetchable("http://localhost:8080/x.png"), cfg!(test));
+    fn loopback_http_is_refused() {
+        assert!(!ImageCache::is_fetchable("http://127.0.0.1:8080/x.png"));
+        assert!(!ImageCache::is_fetchable("http://localhost:8080/x.png"));
     }
 
     // ── download_image ──────────────────────────────────────────────────
@@ -577,7 +597,7 @@ mod tests {
     #[tokio::test]
     async fn test_download_image_success() {
         let png = tiny_png();
-        let (url, _port) = spawn_http_server(png.clone(), "image/png");
+        let url = spawn_image_server(png.clone(), "image/png");
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         let cache = temp_cache(1024 * 1024).await;
         assert_eq!(cache.download_image(&url).await.ok(), Some(png));
@@ -585,7 +605,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_download_image_http_error() {
-        let (url, _port) = spawn_http_error(404);
+        let url = spawn_status_server(404);
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         let cache = temp_cache(1024 * 1024).await;
         let err = cache.download_image(&url).await.unwrap_err();
@@ -595,7 +615,7 @@ mod tests {
     #[tokio::test]
     async fn test_download_image_connection_refused() {
         let cache = temp_cache(1024 * 1024).await;
-        let err = cache.download_image("http://127.0.0.1:1/image.png").await.unwrap_err();
+        let err = cache.download_image("https://localhost:1/image.png").await.unwrap_err();
         assert!(err.contains("Request failed"));
     }
 
@@ -604,7 +624,7 @@ mod tests {
     #[tokio::test]
     async fn test_get_or_load_downloads_and_caches() {
         let png = tiny_png();
-        let (url, _port) = spawn_http_server(png.clone(), "image/png");
+        let url = spawn_image_server(png.clone(), "image/png");
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         let cache = temp_cache(1024 * 1024).await;
 
@@ -634,8 +654,8 @@ mod tests {
             .memory_cache
             .write()
             .await
-            .insert("http://a.test/cached.png".to_string(), CachedImage { data: Arc::new(data.clone()) });
-        assert_eq!(cache.get_or_load("http://a.test/cached.png").await.map(|c| (*c.data).clone()), Some(data));
+            .insert("https://a.test/cached.png".to_string(), CachedImage { data: Arc::new(data.clone()) });
+        assert_eq!(cache.get_or_load("https://a.test/cached.png").await.map(|c| (*c.data).clone()), Some(data));
     }
 
     #[tokio::test]
@@ -652,7 +672,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_or_load_download_failure() {
-        let (url, _port) = spawn_http_error(503);
+        let url = spawn_status_server(503);
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         let cache = temp_cache(1024 * 1024).await;
         assert!(cache.get_or_load(&url).await.is_none());
@@ -661,7 +681,7 @@ mod tests {
     #[tokio::test]
     async fn test_get_or_load_second_call_uses_cache() {
         let png = tiny_png();
-        let (url, _port) = spawn_http_server(png.clone(), "image/png");
+        let url = spawn_image_server(png.clone(), "image/png");
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         let cache = temp_cache(1024 * 1024).await;
 

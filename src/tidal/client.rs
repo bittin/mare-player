@@ -15,18 +15,21 @@ use super::auth::{AuthManager, AuthState, LoginRequest, StoredCredentials, UserP
 use super::client_identity;
 use super::models::{
     Album, Artist, CreditContributor, CreditRole, ExploreCard, ExplorePage, ExploreSection, ExploreTarget, FeedActivity,
-    FeedItem, Mix, PageLink, Playlist, SearchResults, StreamQuality, Track, TrackCredits, TrackLyrics, tidal_cover_url,
-    tidal_promo_image_url,
+    FeedItem, Mix, PageLink, Playlist, SearchCategory, SearchResults, StreamQuality, Track, TrackCredits, TrackLyrics,
+    tidal_cover_url, tidal_promo_image_url,
 };
 use base64::{Engine, engine::general_purpose};
-use reqwest::header::AUTHORIZATION;
 use serde::Deserialize;
 use std::collections::HashSet;
 use std::sync::Arc;
+use tidlers::client::api::events::PlaybackReporter;
 use tidlers::client::models::collection::album::CollectionFavoriteAlbumsResponse;
 use tidlers::client::models::collection::track::CollectionFavoriteTracksResponse;
+use tidlers::client::models::events::PlaybackSession;
+use tidlers::client::models::home::{HomeItem, HomeListItem, HomeMixData, HomeShortcutItem};
 use tidlers::client::models::page::{PageModule, PageResponse};
 use tidlers::client::models::playback::{AssetPresentation, PlaybackMode, VideoQuality};
+use tidlers::client::models::playlist::{PlaylistItemsResponse, PlaylistMedia};
 use tidlers::client::models::track::config::TrackPlaybackInfoConfig;
 use tidlers::client::models::video::config::VideoPlaybackInfoConfig;
 use tidlers::{TidalClient, auth::TidalAuth, client::models::collection::favorites::FavoriteResourceType};
@@ -171,6 +174,24 @@ impl From<CollectionFavoriteTracksResponse> for ApiPaginatedResponse<Track> {
     }
 }
 
+impl From<PlaylistItemsResponse> for ApiPaginatedResponse<Track> {
+    fn from(page: PlaylistItemsResponse) -> Self {
+        Self {
+            items: page
+                .items
+                .into_iter()
+                .map(|entry| match entry.item {
+                    PlaylistMedia::Track(track) => Track::from(track),
+                    PlaylistMedia::Video(video) => Track::from(video),
+                })
+                .collect(),
+            // Out-of-range values become -1, which pagination rejects.
+            offset: i32::try_from(page.offset).unwrap_or(-1),
+            total_number_of_items: i32::try_from(page.total_number_of_items).unwrap_or(-1),
+        }
+    }
+}
+
 impl From<CollectionFavoriteAlbumsResponse> for ApiPaginatedResponse<Album> {
     fn from(page: CollectionFavoriteAlbumsResponse) -> Self {
         Self {
@@ -179,103 +200,6 @@ impl From<CollectionFavoriteAlbumsResponse> for ApiPaginatedResponse<Album> {
             total_number_of_items: page.total_number_of_items,
         }
     }
-}
-
-/// Wrapper for endpoints that nest the real payload under `"item"`.
-/// `item` is `Option` because mix endpoints can contain null entries.
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct ApiItemWrapper<T> {
-    item: Option<T>,
-    /// Playlist items carry the kind here (`"track"` or `"video"`); absent on
-    /// other endpoints.
-    #[serde(default, rename = "type")]
-    item_type: Option<String>,
-}
-
-/// Lenient track data — works for playlist, favorite, mix, and radio responses.
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct ApiTrackData {
-    id: u64,
-    title: String,
-    duration: u64,
-    #[serde(default)]
-    track_number: u32,
-    #[serde(default)]
-    explicit: bool,
-    audio_quality: Option<String>,
-    /// Null for some video items in playlists (and occasionally curated lists),
-    /// so this must stay optional or the whole response fails to deserialize.
-    /// Falls back to the first entry of `artists` when null.
-    #[serde(default)]
-    artist: Option<ApiTrackArtist>,
-    /// Full artist list; used as a fallback when the singular `artist` is null.
-    #[serde(default)]
-    artists: Vec<ApiTrackArtist>,
-    /// Null for video items in playlists (and occasionally curated lists), so
-    /// this must stay optional or the whole response fails to deserialize.
-    #[serde(default)]
-    album: Option<ApiTrackAlbum>,
-    /// Video items have no album cover; their thumbnail lives here (camelCase
-    /// `imageId`). Used as the cover when `album` is absent.
-    #[serde(default)]
-    image_id: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct ApiTrackArtist {
-    id: u64,
-    /// TIDAL sometimes returns null for artist name in curated playlists
-    name: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct ApiTrackAlbum {
-    id: u64,
-    #[serde(default)]
-    title: String,
-    cover: Option<String>,
-}
-
-/// Convert an `ApiTrackData` into our domain `Track`.
-impl From<ApiTrackData> for Track {
-    fn from(t: ApiTrackData) -> Self {
-        // Video items (and some curated entries) have no album; fall back to
-        // the item's own `imageId` thumbnail for the cover.
-        let (album_name, album_id, cover_url) = match t.album {
-            Some(a) => (Some(a.title), Some(a.id.to_string()), a.cover.map(|c| tidal_cover_url(&c))),
-            None => (None, None, t.image_id.map(|id| tidal_cover_url(&id))),
-        };
-        // Primary artist: the singular `artist`, falling back to the first of
-        // the `artists` list when it's null (e.g. video items in playlists).
-        let (artist_name, artist_id) = match t.artist.or_else(|| t.artists.into_iter().next()) {
-            Some(a) => (a.name.unwrap_or_else(|| "Unknown Artist".to_string()), Some(a.id.to_string())),
-            None => ("Unknown Artist".to_string(), None),
-        };
-        Track {
-            id: t.id.to_string(),
-            title: t.title,
-            duration: t.duration as u32,
-            track_number: t.track_number,
-            artist_name,
-            artist_id,
-            album_name,
-            album_id,
-            cover_url,
-            explicit: t.explicit,
-            audio_quality: t.audio_quality,
-            is_video: false,
-        }
-    }
-}
-
-// ── Credentials for endpoints requiring direct requests ─────────────────
-
-/// Access token + country code (no user ID needed).
-struct AuthTokenContext {
-    access_token: String,
-    country_code: String,
 }
 
 pub type TidalResult<T> = Result<T, TidalError>;
@@ -447,9 +371,58 @@ pub struct TidalAppClient {
     warned_downgrades: Arc<std::sync::Mutex<HashSet<String>>>,
 }
 
+/// Every mix in the home feed's modules, in feed order, without the
+/// duplicates TIDAL repeats across modules.
+fn home_feed_mixes(modules: Vec<HomeItem>) -> Vec<Mix> {
+    let mut mixes = Vec::new();
+    for module in modules {
+        match module {
+            HomeItem::HomeShortcutList { inner } => mixes.extend(inner.items.into_iter().filter_map(|item| match item {
+                HomeShortcutItem::Mix(mix) => Some(mix.data),
+                _ => None,
+            })),
+            HomeItem::HomeHorizontalList { inner } => mixes.extend(list_mixes(inner.items)),
+            HomeItem::HomeHorizontalListWithContext { inner } => {
+                mixes.extend(list_mixes(inner.items.into_iter().chain(std::iter::once(inner.header))))
+            }
+            HomeItem::HomeVerticalListCard { inner } => mixes.extend(list_mixes(inner.items)),
+            HomeItem::HomeTrackList { inner } => mixes.extend(list_mixes(inner.items)),
+        }
+    }
+    let mut seen = HashSet::new();
+    mixes.into_iter().map(Mix::from).filter(|mix| seen.insert(mix.id.clone())).collect()
+}
+
+fn list_mixes(items: impl IntoIterator<Item = HomeListItem>) -> impl Iterator<Item = HomeMixData> {
+    items.into_iter().filter_map(|item| match item {
+        HomeListItem::Mix(mix) => Some(mix.data),
+        _ => None,
+    })
+}
+
 impl Default for TidalAppClient {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// The signed-in account's profile, as far as the session's user info has it.
+/// The picture and subscription plan are fetched separately.
+///
+/// This is personal data (name, email): show it in the UI, never log it.
+fn user_profile(client: &TidalClient) -> UserProfile {
+    match &client.user_info {
+        Some(u) => UserProfile {
+            username: Some(u.username.clone()),
+            first_name: u.first_name.clone(),
+            last_name: u.last_name.clone(),
+            full_name: u.full_name.clone(),
+            nickname: u.nickname.clone(),
+            email: Some(u.email.clone()),
+            picture_url: None,
+            subscription_plan: None,
+        },
+        None => UserProfile::default(),
     }
 }
 
@@ -460,48 +433,20 @@ impl TidalAppClient {
     // extracted from the locked client.  These helpers eliminate the ~15-line
     // boilerplate that was previously copy-pasted into every method.
 
-    /// Extract access token + country code from the authenticated client.
-    ///
-    /// The lock is acquired and released inside, so callers get owned values
-    /// they can use across `.await` points without holding the mutex.
-    async fn auth_context(&self) -> TidalResult<AuthTokenContext> {
-        let client_guard = self.client.lock().await;
-        let client = client_guard.as_ref().ok_or(TidalError::NotAuthenticated)?;
-
-        let access_token = client
-            .session
-            .auth
-            .access_token
-            .as_ref()
-            .ok_or_else(|| {
-                error!("No access token available");
-                TidalError::NotAuthenticated
-            })?
-            .clone();
-
-        let country_code = client.user_info.as_ref().map(|u| u.country_code.clone()).unwrap_or_else(|| "US".to_string());
-
-        Ok(AuthTokenContext { access_token, country_code })
-    }
-
     /// Add `resource_id` to the user's favorites via tidlers.
     async fn add_to_favorites(&self, resource: FavoriteResourceType, resource_id: &str) -> TidalResult<()> {
         self.ensure_valid_token().await?;
-        let id: u32 = resource_id.parse().map_err(|e| TidalError::ParseError(format!("bad id `{resource_id}`: {e}")))?;
-
         let client_guard = self.client.lock().await;
         let client = client_guard.as_ref().ok_or(TidalError::NotAuthenticated)?;
-        client.add_to_favorites(resource, id).await.map_err(|e| TidalError::RequestFailed(format!("{e:?}")))
+        client.add_to_favorites(resource, resource_id).await.map_err(|e| TidalError::RequestFailed(format!("{e:?}")))
     }
 
     /// Remove `resource_id` from the user's favorites via tidlers.
     async fn remove_from_favorites(&self, resource: FavoriteResourceType, resource_id: &str) -> TidalResult<()> {
         self.ensure_valid_token().await?;
-        let id: u32 = resource_id.parse().map_err(|e| TidalError::ParseError(format!("bad id `{resource_id}`: {e}")))?;
-
         let client_guard = self.client.lock().await;
         let client = client_guard.as_ref().ok_or(TidalError::NotAuthenticated)?;
-        client.remove_from_favorites(resource, id).await.map_err(|e| TidalError::RequestFailed(format!("{e:?}")))
+        client.remove_from_favorites(resource, resource_id).await.map_err(|e| TidalError::RequestFailed(format!("{e:?}")))
     }
 
     /// Create a new TidalAppClient
@@ -519,16 +464,22 @@ impl TidalAppClient {
         self.auth_manager.state()
     }
 
-    /// Snapshot the current TIDAL access token, if any.
+    /// Queue a finished listen on `reporter`, sent with the session's current
+    /// access token. Returns whether it was queued.
     ///
-    /// Used by `play_reporter` to stamp playback events.  Calls
-    /// `try_lock` on the inner client so callers can grab the token
-    /// from a sync (iced update) context without risking a deadlock
-    /// against an in-flight async API request — if the lock is
-    /// contended, returns `None` and the caller skips reporting.
-    pub fn current_access_token(&self) -> Option<String> {
-        let guard = self.client.try_lock().ok()?;
-        guard.as_ref()?.session.auth.access_token.clone()
+    /// Calls `try_lock` on the inner client so it can run from a sync (iced
+    /// update) context without risking a deadlock against an in-flight async
+    /// API request: if the lock is contended, or there is no signed-in
+    /// session, the listen isn't reported.
+    pub fn report_play(&self, reporter: &PlaybackReporter, session: PlaybackSession) -> bool {
+        let Ok(guard) = self.client.try_lock() else {
+            return false;
+        };
+        let Some(client) = guard.as_ref().filter(|c| c.session.auth.access_token.is_some()) else {
+            return false;
+        };
+        reporter.report(client, session);
+        true
     }
 
     /// Set the audio quality for playback
@@ -744,28 +695,7 @@ impl TidalAppClient {
 
                         let username = client.user_info.as_ref().map(|u| u.username.clone());
 
-                        // Build full user profile from tidlers User struct
-                        let profile = {
-                            use crate::tidal::auth::UserProfile;
-                            if let Some(u) = &client.user_info {
-                                info!(
-                                    "TIDAL user fields — username: {:?}, first_name: {:?}, last_name: {:?}, full_name: {:?}, nickname: {:?}, email: {:?}",
-                                    u.username, u.first_name, u.last_name, u.full_name, u.nickname, u.email
-                                );
-                                UserProfile {
-                                    username: Some(u.username.clone()),
-                                    first_name: u.first_name.clone(),
-                                    last_name: u.last_name.clone(),
-                                    full_name: u.full_name.clone(),
-                                    nickname: u.nickname.clone(),
-                                    email: Some(u.email.clone()),
-                                    picture_url: None,       // fetched separately below
-                                    subscription_plan: None, // fetched separately below
-                                }
-                            } else {
-                                UserProfile { username: username.clone(), ..Default::default() }
-                            }
-                        };
+                        let profile = user_profile(&client);
 
                         // Store the refreshed session
                         let new_credentials = StoredCredentials {
@@ -906,28 +836,7 @@ impl TidalAppClient {
                 let username = client.user_info.as_ref().map(|u| u.username.clone());
                 let user_id = client.user_info.as_ref().map(|u| u.user_id.to_string());
 
-                // Build full user profile from tidlers User struct
-                let profile = {
-                    use crate::tidal::auth::UserProfile;
-                    if let Some(u) = &client.user_info {
-                        info!(
-                            "TIDAL user fields — username: {:?}, first_name: {:?}, last_name: {:?}, full_name: {:?}, nickname: {:?}, email: {:?}",
-                            u.username, u.first_name, u.last_name, u.full_name, u.nickname, u.email
-                        );
-                        UserProfile {
-                            username: Some(u.username.clone()),
-                            first_name: u.first_name.clone(),
-                            last_name: u.last_name.clone(),
-                            full_name: u.full_name.clone(),
-                            nickname: u.nickname.clone(),
-                            email: Some(u.email.clone()),
-                            picture_url: None,       // fetched separately below
-                            subscription_plan: None, // fetched separately below
-                        }
-                    } else {
-                        UserProfile { username: username.clone(), ..Default::default() }
-                    }
-                };
+                let profile = user_profile(client);
 
                 // Store credentials for future sessions
                 let credentials = StoredCredentials {
@@ -974,22 +883,39 @@ impl TidalAppClient {
         let _ = AuthManager::delete_credentials();
     }
 
-    /// Search for tracks, albums, artists, and playlists
-    pub async fn search(&self, query: &str, limit: u32) -> TidalResult<SearchResults> {
+    /// Search `categories`, returning up to `limit` results per category
+    /// starting at `offset`, plus TIDAL's total match count for each.
+    pub async fn search(
+        &self,
+        query: &str,
+        categories: &[SearchCategory],
+        limit: u32,
+        offset: u32,
+    ) -> TidalResult<SearchResults> {
         // Ensure token is valid before the operation
         self.ensure_valid_token().await?;
 
         let client_guard = self.client.lock().await;
         let client = client_guard.as_ref().ok_or(TidalError::NotAuthenticated)?;
 
-        debug!("Searching for: {}", query);
+        debug!("Searching for: {} ({:?}, offset {})", query, categories, offset);
 
         use tidlers::client::models::search::config::{SearchConfig, SearchType};
 
         let config = SearchConfig {
             query: query.to_string(),
-            types: vec![SearchType::Tracks, SearchType::Albums, SearchType::Artists, SearchType::Playlists, SearchType::Videos],
+            types: categories
+                .iter()
+                .map(|c| match c {
+                    SearchCategory::Tracks => SearchType::Tracks,
+                    SearchCategory::Artists => SearchType::Artists,
+                    SearchCategory::Albums => SearchType::Albums,
+                    SearchCategory::Playlists => SearchType::Playlists,
+                    SearchCategory::Videos => SearchType::Videos,
+                })
+                .collect(),
             limit,
+            offset,
             ..Default::default()
         };
 
@@ -999,21 +925,25 @@ impl TidalAppClient {
 
                 // Convert tracks from SearchTrackHit
                 if let Some(tracks) = results.tracks {
+                    search_results.totals.tracks = tracks.total_number_of_items;
                     search_results.tracks = tracks.items.into_iter().map(Track::from).collect();
                 }
 
                 // Convert albums from SearchAlbumHit
                 if let Some(albums) = results.albums {
+                    search_results.totals.albums = albums.total_number_of_items;
                     search_results.albums = albums.items.into_iter().map(Album::from).collect();
                 }
 
                 // Convert artists from SearchArtistHit
                 if let Some(artists) = results.artists {
+                    search_results.totals.artists = artists.total_number_of_items;
                     search_results.artists = artists.items.into_iter().map(Artist::from).collect();
                 }
 
                 // Convert playlists from SearchPlaylistHit
                 if let Some(playlists) = results.playlists {
+                    search_results.totals.playlists = playlists.total_number_of_items;
                     search_results.playlists = playlists.items.into_iter().map(Playlist::from).collect();
                 }
 
@@ -1021,6 +951,7 @@ impl TidalAppClient {
                 // have no album; their thumbnail is the `image` UUID, mirroring
                 // how playlist/Explore video items get their cover.
                 if let Some(videos) = results.videos {
+                    search_results.totals.videos = videos.total_number_of_items;
                     search_results.videos = videos
                         .items
                         .into_iter()
@@ -1079,7 +1010,7 @@ impl TidalAppClient {
     pub async fn get_user_favorite_tracks(&self, _limit: Option<u32>) -> TidalResult<Vec<Track>> {
         self.ensure_valid_token().await?;
         debug!("Getting user favorite tracks (paginated)");
-        Self::collect_favorites("Favorite tracks", |limit, offset| async move {
+        Self::collect_pages("Favorite tracks", |limit, offset| async move {
             let client_guard = self.client.lock().await;
             let client = client_guard.as_ref().ok_or(tidlers::error::TidalError::NotAuthenticated)?;
             client.get_collection_track_favorites(Some(limit), Some(offset)).await.map(ApiPaginatedResponse::from)
@@ -1087,9 +1018,9 @@ impl TidalAppClient {
         .await
     }
 
-    /// Walk the SDK's pages until exhausted. Offsets count returned entries,
+    /// Walk tidlers' pages until exhausted. Offsets count returned entries,
     /// not the requested page size, so short intermediate pages are not skipped.
-    async fn collect_favorites<T, F, Fut>(context: &str, mut fetch_page: F) -> TidalResult<Vec<T>>
+    async fn collect_pages<T, F, Fut>(context: &str, mut fetch_page: F) -> TidalResult<Vec<T>>
     where
         F: FnMut(u32, u32) -> Fut,
         Fut: std::future::Future<Output = Result<ApiPaginatedResponse<T>, tidlers::error::TidalError>>,
@@ -1114,12 +1045,39 @@ impl TidalAppClient {
         }
     }
 
+    /// Walk cursor-paged tidlers results until a page comes back without a cursor
+    /// (or empty). A page that hands back the cursor it was fetched with would
+    /// loop forever, so that is an error rather than a hang.
+    async fn collect_cursor_pages<T, F, Fut>(context: &str, mut fetch_page: F) -> TidalResult<Vec<T>>
+    where
+        F: FnMut(Option<String>) -> Fut,
+        Fut: std::future::Future<Output = Result<(Vec<T>, Option<String>), tidlers::error::TidalError>>,
+    {
+        let mut cursor = None;
+        let mut items = Vec::new();
+        loop {
+            let (page, next) = fetch_page(cursor.clone()).await.map_err(|e| Self::request_error(context, e))?;
+            let count = page.len();
+            items.extend(page);
+            info!("Fetched {context} page: {} so far", items.len());
+            match next {
+                Some(next) if count > 0 => {
+                    if cursor.as_ref() == Some(&next) {
+                        return Err(TidalError::ParseError(format!("{context} returned the same page cursor twice")));
+                    }
+                    cursor = Some(next);
+                }
+                _ => return Ok(items),
+            }
+        }
+    }
+
     /// Get all favourite albums through tidlers without per-album detail requests.
     /// `_limit` is not a cap on the collection; requests use 100-item pages.
     pub async fn get_user_favorite_albums(&self, _limit: Option<u32>) -> TidalResult<Vec<Album>> {
         self.ensure_valid_token().await?;
         debug!("Getting user favorite albums (paginated)");
-        Self::collect_favorites("Favorite albums", |limit, offset| async move {
+        Self::collect_pages("Favorite albums", |limit, offset| async move {
             let client_guard = self.client.lock().await;
             let client = client_guard.as_ref().ok_or(tidlers::error::TidalError::NotAuthenticated)?;
             client.get_collection_album_favorites(Some(limit), Some(offset)).await.map(ApiPaginatedResponse::from)
@@ -1127,79 +1085,23 @@ impl TidalAppClient {
         .await
     }
 
-    /// Get playlist items (tracks).
-    ///
-    /// Paginates through `GET /v1/playlists/{uuid}/items` with a **hand-rolled**
-    /// request and our lenient [`ApiTrackData`] parser, rather than tidlers'
-    /// `get_playlist_items()`. TIDAL playlists can contain video items whose
-    /// `album` field is `null`; tidlers' strict deserializer rejects those and
-    /// fails the entire playlist. Our parser tolerates the null album, so video
-    /// playlists load (video entries surface as tracks with no album/cover).
-    ///
-    /// `limit` is the page size (capped at 100); `_offset` is ignored (we always
-    /// start from 0 and walk to the end).
+    /// Get every playlist entry, tracks and music videos alike, in playlist
+    /// order. `_limit` and `_offset` are not caps on the playlist: requests use
+    /// 100-item pages and walk to the end.
     pub async fn get_playlist_tracks(
         &self,
         playlist_uuid: &str,
-        limit: Option<u32>,
+        _limit: Option<u32>,
         _offset: Option<u32>,
     ) -> TidalResult<Vec<Track>> {
         self.ensure_valid_token().await?;
         debug!("Getting playlist tracks for: {}", playlist_uuid);
-
-        let ctx = self.auth_context().await?;
-        let http_client = reqwest::Client::new();
-        let page_size: u32 = limit.unwrap_or(100).min(100);
-        let mut offset: u32 = 0;
-        let mut all_tracks: Vec<Track> = Vec::new();
-
-        loop {
-            let url = format!(
-                "https://api.tidal.com/v1/playlists/{}/items?countryCode={}&limit={}&offset={}&order=INDEX&orderDirection=ASC",
-                playlist_uuid, ctx.country_code, page_size, offset
-            );
-
-            let response = http_client
-                .get(&url)
-                .header(AUTHORIZATION, format!("Bearer {}", ctx.access_token))
-                .send()
-                .await
-                .map_err(|e| TidalError::NetworkError(format!("playlist items request failed: {}", e)))?;
-
-            if !response.status().is_success() {
-                let status = response.status();
-                let body = response.text().await.unwrap_or_default();
-                error!("Playlist items request failed: {} - {}", status, body);
-                return Err(TidalError::RequestFailed(format!("HTTP {}", status)));
-            }
-
-            let body =
-                response.text().await.map_err(|e| TidalError::NetworkError(format!("reading playlist items body: {}", e)))?;
-
-            let parsed: ApiPaginatedResponse<ApiItemWrapper<ApiTrackData>> =
-                serde_json::from_str(&body).map_err(|e| TidalError::ParseError(format!("playlist items JSON: {}", e)))?;
-
-            let total = parsed.total_number_of_items.max(0) as u32;
-            let page_items = parsed.items.len() as u32;
-
-            all_tracks.extend(parsed.items.into_iter().filter_map(|w| {
-                let is_video = w.item_type.as_deref() == Some("video");
-                w.item.map(|it| {
-                    let mut track = Track::from(it);
-                    track.is_video = is_video;
-                    track
-                })
-            }));
-
-            offset += page_items;
-            info!("Fetched playlist tracks page: {} / {} total", all_tracks.len(), total);
-
-            if page_items == 0 || offset >= total {
-                break;
-            }
-        }
-
-        Ok(all_tracks)
+        Self::collect_pages("Playlist items", |limit, offset| async move {
+            let client_guard = self.client.lock().await;
+            let client = client_guard.as_ref().ok_or(tidlers::error::TidalError::NotAuthenticated)?;
+            client.get_playlist_items(playlist_uuid, Some(limit), Some(offset), None, None).await.map(ApiPaginatedResponse::from)
+        })
+        .await
     }
 
     /// Resolve the playable HLS (`.m3u8`) URL for a music **video**.
@@ -1242,7 +1144,7 @@ impl TidalAppClient {
 
         debug!("Getting album tracks for: {}", album_id);
 
-        match client.get_album_items(album_id.to_string(), Some(limit.unwrap_or(100) as u64), offset.map(|o| o as u64)).await {
+        match client.get_album_items(album_id.to_string(), Some(limit.unwrap_or(100)), offset).await {
             Ok(response) => {
                 let tracks: Vec<Track> = response.items.into_iter().map(|item| Track::from(item.item)).collect();
                 Ok(tracks)
@@ -1420,7 +1322,7 @@ impl TidalAppClient {
 
         debug!("Getting top tracks for artist: {}", artist_id);
 
-        match client.get_artist_tracks(artist_id.to_string(), limit.map(|l| l as u64), None).await {
+        match client.get_artist_tracks(artist_id.to_string(), limit, None).await {
             Ok(response) => {
                 let tracks = response.items.into_iter().map(Track::from).collect();
                 Ok(tracks)
@@ -1441,7 +1343,7 @@ impl TidalAppClient {
 
         debug!("Getting albums for artist: {}", artist_id);
 
-        match client.get_artist_albums(artist_id.to_string(), limit.map(|l| l as u64), None).await {
+        match client.get_artist_albums(artist_id.to_string(), limit, None).await {
             Ok(response) => {
                 let albums = response.items.into_iter().map(Album::from).collect();
                 Ok(albums)
@@ -1465,7 +1367,7 @@ impl TidalAppClient {
 
         debug!("Getting videos for artist: {}", artist_id);
 
-        match client.get_artist_videos(artist_id.to_string(), limit.map(|l| l as u64), None).await {
+        match client.get_artist_videos(artist_id.to_string(), limit, None).await {
             Ok(response) => {
                 let videos = response
                     .items
@@ -2015,138 +1917,19 @@ impl TidalAppClient {
     // Mixes & Radio
     // =========================================================================
 
-    /// Fetch the user's personalized mixes from the TIDAL home feed.
-    ///
-    /// Parses the home feed response and extracts all `MixData` items from
-    /// the various list types (ShortcutList, HorizontalList, etc.).
+    /// Fetch the user's personalized mixes from the TIDAL home feed: every mix
+    /// in any module (shortcuts, lists and list headers), each once.
     pub async fn get_mixes(&self) -> TidalResult<Vec<Mix>> {
         self.ensure_valid_token().await?;
-
-        let (access_token, country_code, locale, time_offset) = {
+        debug!("Fetching home feed for mixes");
+        let feed = {
             let client_guard = self.client.lock().await;
             let client = client_guard.as_ref().ok_or(TidalError::NotAuthenticated)?;
-
-            let token = client.session.auth.access_token.as_ref().ok_or(TidalError::NotAuthenticated)?.clone();
-
-            let cc = client.user_info.as_ref().map(|u| u.country_code.clone()).unwrap_or_else(|| "US".to_string());
-
-            let loc = client.session.locale.clone();
-            let to = client.session.time_offset.clone();
-
-            // Note: get_mixes needs locale and time_offset which aren't in
-            // AuthTokenContext, so we extract them inline here.
-            (token, cc, loc, to)
+            client.get_home_feed(20).await.map_err(|e| Self::request_error("Mixes", e))?
         };
-
-        debug!("Fetching home feed for mixes (raw JSON)");
-
-        let http_client = reqwest::Client::new();
-        let url = format!(
-            "https://tidal.com/v2/home/feed/static?countryCode={}&locale={}&limit=20&deviceType=BROWSER&platform=WEB&timeOffset={}",
-            country_code, locale, time_offset
-        );
-
-        let response = http_client
-            .get(&url)
-            .header(AUTHORIZATION, format!("Bearer {}", access_token))
-            .header("x-tidal-client-version", "2026.1.5")
-            .header("User-Agent", "Mozilla/5.0 (Linux; Android 12; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/91.0.4472.114 Safari/537.36")
-            .send()
-            .await
-            .map_err(|e| TidalError::NetworkError(format!("home feed request failed: {}", e)))?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            error!("Home feed request failed: HTTP {} — {}", status, body);
-            return Err(TidalError::RequestFailed(format!("HTTP {}", status)));
-        }
-
-        let body = response.text().await.map_err(|e| TidalError::NetworkError(format!("reading home feed body: {}", e)))?;
-
-        let feed: serde_json::Value =
-            serde_json::from_str(&body).map_err(|e| TidalError::ParseError(format!("parsing home feed JSON: {}", e)))?;
-
-        let mut mixes = Vec::new();
-
-        // Walk through the feed items array and extract any MIX-type entries
-        // from all the different list types (ShortcutList, HorizontalList, etc.)
-        if let Some(items) = feed.get("items").and_then(|v| v.as_array()) {
-            debug!("Home feed has {} top-level items", items.len());
-
-            for section in items {
-                let section_type = section.get("type").and_then(|t| t.as_str()).unwrap_or("UNKNOWN");
-                let section_title = section.get("title").and_then(|t| t.as_str()).unwrap_or("");
-
-                // Gather all sub-items from this section (could be "items",
-                // or "header" for HorizontalListWithContext)
-                let mut sub_items: Vec<&serde_json::Value> = Vec::new();
-
-                if let Some(arr) = section.get("items").and_then(|v| v.as_array()) {
-                    sub_items.extend(arr.iter());
-                }
-                // HorizontalListWithContext has a "header" item too
-                if let Some(header) = section.get("header") {
-                    sub_items.push(header);
-                }
-
-                let mut section_mix_count = 0;
-                for sub in &sub_items {
-                    let item_type = sub.get("type").and_then(|t| t.as_str()).unwrap_or("");
-
-                    if item_type == "MIX"
-                        && let Some(data) = sub.get("data")
-                        && let Some(mix) = Self::parse_mix_from_json(data)
-                    {
-                        mixes.push(mix);
-                        section_mix_count += 1;
-                    }
-                }
-
-                if section_mix_count > 0 {
-                    debug!("Section '{}' ({}): extracted {} mixes", section_title, section_type, section_mix_count);
-                }
-            }
-        }
-
-        // Deduplicate by ID (mixes can appear in multiple sections)
-        let mut seen = std::collections::HashSet::new();
-        mixes.retain(|m| seen.insert(m.id.clone()));
-
+        let mixes = home_feed_mixes(feed.items);
         info!("Found {} unique mixes from home feed", mixes.len());
         Ok(mixes)
-    }
-
-    /// Parse a single Mix from a raw JSON `data` object within the home feed.
-    pub fn parse_mix_from_json(data: &serde_json::Value) -> Option<Mix> {
-        let id = data.get("id").and_then(|v| v.as_str())?.to_string();
-        let mix_type = data.get("type").and_then(|v| v.as_str()).unwrap_or("MIX").to_string();
-
-        let title = data.get("titleTextInfo").and_then(|v| v.get("text")).and_then(|v| v.as_str()).unwrap_or("Mix").to_string();
-
-        let subtitle = data
-            .get("shortSubtitleTextInfo")
-            .and_then(|v| v.get("text"))
-            .and_then(|v| v.as_str())
-            .or_else(|| data.get("subtitleTextInfo").and_then(|v| v.get("text")).and_then(|v| v.as_str()))
-            .unwrap_or("")
-            .to_string();
-
-        // Pick the largest image from mixImages
-        let image_url = data.get("mixImages").and_then(|v| v.as_array()).and_then(|imgs| {
-            imgs.iter()
-                .filter_map(|img| {
-                    let w = img.get("width").and_then(|v| v.as_u64()).unwrap_or(0);
-                    let url = img.get("url").and_then(|v| v.as_str())?;
-                    Some((w, url.to_string()))
-                })
-                .max_by_key(|(w, _)| *w)
-                .map(|(_, url)| url)
-        });
-
-        debug!("Parsed mix from raw JSON: id={}, type={}, title={:?}", id, mix_type, title);
-
-        Some(Mix { id, title, subtitle, mix_type, image_url })
     }
 
     // =========================================================================
@@ -2502,112 +2285,18 @@ impl TidalAppClient {
     // Followed Artists (Profiles)
     // =========================================================================
 
-    /// Fetch the user's followed/favorite artists from their collection.
-    ///
-    /// Makes a direct HTTP request to the TIDAL v2 collection API, bypassing
-    /// the tidlers `CollectionArtistsResponse` struct which requires a
-    /// `lastModifiedAt` field that the API no longer always returns.
+    /// Fetch every artist the user follows, in the order TIDAL lists them,
+    /// walking its cursor-paged collection 50 at a time.
     pub async fn get_followed_artists(&self) -> TidalResult<Vec<Artist>> {
         self.ensure_valid_token().await?;
-
-        let (access_token, country_code, locale) = {
+        debug!("Getting followed artists (paginated)");
+        let artists = Self::collect_cursor_pages("Followed artists", |cursor| async move {
             let client_guard = self.client.lock().await;
-            let client = client_guard.as_ref().ok_or(TidalError::NotAuthenticated)?;
-
-            let token = client.session.auth.access_token.as_ref().ok_or(TidalError::NotAuthenticated)?.clone();
-
-            let cc = client.user_info.as_ref().map(|u| u.country_code.clone()).unwrap_or_else(|| "US".to_string());
-
-            let loc = client.session.locale.clone();
-
-            // Note: get_followed_artists needs locale which isn't in
-            // AuthTokenContext, so we extract inline here.
-            (token, cc, loc)
-        };
-
-        debug!("Fetching followed artists (raw JSON)");
-
-        let http_client = reqwest::Client::new();
-        let mut artists = Vec::new();
-        let mut cursor: Option<String> = None;
-        let page_limit = 50;
-
-        loop {
-            let mut url = format!(
-                "https://api.tidal.com/v2/my-collection/artists/folders?countryCode={}&locale={}&limit={}&order=DATE&folderId=root",
-                country_code, locale, page_limit
-            );
-            if let Some(ref c) = cursor {
-                url.push_str(&format!("&cursor={}", c));
-            }
-
-            let response = http_client
-                .get(&url)
-                .header(AUTHORIZATION, format!("Bearer {}", access_token))
-                .send()
-                .await
-                .map_err(|e| TidalError::NetworkError(format!("followed artists request failed: {}", e)))?;
-
-            if !response.status().is_success() {
-                let status = response.status();
-                let body = response.text().await.unwrap_or_default();
-                error!("Followed artists request failed: HTTP {} — {}", status, body);
-                return Err(TidalError::RequestFailed(format!("HTTP {}", status)));
-            }
-
-            let body =
-                response.text().await.map_err(|e| TidalError::NetworkError(format!("reading followed artists body: {}", e)))?;
-
-            let parsed: serde_json::Value = serde_json::from_str(&body)
-                .map_err(|e| TidalError::ParseError(format!("parsing followed artists JSON: {}", e)))?;
-
-            let page_count = if let Some(items) = parsed.get("items").and_then(|v| v.as_array()) {
-                for item in items {
-                    if let Some(data) = item.get("data") {
-                        let id = data
-                            .get("id")
-                            .and_then(|v| v.as_u64().map(|n| n.to_string()).or_else(|| v.as_str().map(String::from)))
-                            .unwrap_or_default();
-
-                        let name = data.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
-
-                        let picture_url =
-                            data.get("picture").and_then(|v| v.as_str()).filter(|p| !p.is_empty()).map(tidal_cover_url);
-
-                        let popularity = data.get("popularity").and_then(|v| v.as_u64()).map(|p| p as u32);
-
-                        let roles: Vec<String> = data
-                            .get("artistRoles")
-                            .and_then(|v| v.as_array())
-                            .map(|arr| {
-                                arr.iter().filter_map(|r| r.get("category").and_then(|c| c.as_str()).map(String::from)).collect()
-                            })
-                            .unwrap_or_default();
-
-                        let url = data.get("url").and_then(|v| v.as_str()).map(String::from);
-
-                        if !id.is_empty() && !name.is_empty() {
-                            artists.push(Artist { id, name, picture_url, bio: None, popularity, roles, url });
-                        }
-                    }
-                }
-                items.len()
-            } else {
-                0
-            };
-
-            // Check for cursor-based pagination
-            let next_cursor = parsed.get("cursor").and_then(|v| v.as_str()).map(String::from);
-
-            debug!("Followed artists page: got {} items, cursor: {:?}", page_count, next_cursor);
-
-            // Stop if we got fewer items than the limit (last page) or no cursor
-            if page_count < page_limit || next_cursor.is_none() {
-                break;
-            }
-            cursor = next_cursor;
-        }
-
+            let client = client_guard.as_ref().ok_or(tidlers::error::TidalError::NotAuthenticated)?;
+            let page = client.get_collection_artists(50, cursor).await?;
+            Ok((page.items.into_iter().map(|entry| Artist::from(entry.data)).collect(), page.cursor))
+        })
+        .await?;
         info!("Loaded {} followed artists", artists.len());
         Ok(artists)
     }
@@ -2689,7 +2378,7 @@ mod tests {
         use tidlers::client::models::track::LyricsResponse;
 
         fn convert(value: Value) -> TrackLyrics {
-            let response: LyricsResponse = serde_json::from_value(value).expect("SDK lyrics fixture should deserialize");
+            let response: LyricsResponse = serde_json::from_value(value).expect("tidlers lyrics fixture should deserialize");
             TidalAppClient::lyrics_from_response(Ok(response)).expect("lyrics should convert")
         }
 
@@ -2763,7 +2452,7 @@ mod tests {
         }
 
         #[test]
-        fn sdk_not_found_is_a_normal_empty_result() {
+        fn tidlers_not_found_is_a_normal_empty_result() {
             let lyrics = TidalAppClient::lyrics_from_response(Err(tidlers::error::TidalError::NotFound)).unwrap();
             assert!(lyrics.is_empty());
             assert!(lyrics.provider.is_none());
@@ -2817,17 +2506,17 @@ mod tests {
                     "explicit": true, "audioQuality": "LOSSLESS", "mediaMetadata": {"tags": ["LOSSLESS", "HIRES_LOSSLESS"]}
                 }
             })).collect();
-            let sdk: CollectionFavoriteAlbumsResponse = serde_json::from_value(serde_json::json!({
+            let response: CollectionFavoriteAlbumsResponse = serde_json::from_value(serde_json::json!({
                 "items": items, "offset": offset, "limit": 100, "totalNumberOfItems": total
             }))
-            .expect("SDK favourite-albums fixture should deserialize");
-            sdk.into()
+            .expect("tidlers favourite-albums fixture should deserialize");
+            response.into()
         }
 
         #[tokio::test]
         async fn all_album_pages_preserve_metadata_and_order() {
             let mut calls = Vec::new();
-            let albums = TidalAppClient::collect_favorites("Favorite albums", |limit, offset| {
+            let albums = TidalAppClient::collect_pages("Favorite albums", |limit, offset| {
                 calls.push((limit, offset));
                 ready(Ok(match offset {
                     0 => page(0, 205, 0..100),
@@ -2863,8 +2552,8 @@ mod tests {
                     "numberOfTracks": null, "duration": null, "explicit": null, "mediaMetadata": null,
                     "audioQuality": "HIGH"}),
             ] {
-                let sdk: tidlers::client::models::album::Album = serde_json::from_value(payload).unwrap();
-                let album = Album::from(sdk);
+                let tidlers_album: tidlers::client::models::album::Album = serde_json::from_value(payload).unwrap();
+                let album = Album::from(tidlers_album);
                 assert_eq!(album.artist_name, "Unknown Artist");
                 assert!(album.artist_id.is_none());
                 assert_eq!(album.num_tracks, 0);
@@ -2877,12 +2566,12 @@ mod tests {
 
         #[test]
         fn explicit_zero_false_and_empty_tags_are_preserved() {
-            let sdk: tidlers::client::models::album::Album = serde_json::from_value(serde_json::json!({
+            let tidlers_album: tidlers::client::models::album::Album = serde_json::from_value(serde_json::json!({
                 "id": 1, "title": "Empty", "numberOfTracks": 0, "duration": 0,
                 "explicit": false, "audioQuality": "HIGH", "mediaMetadata": {"tags": []}
             }))
             .unwrap();
-            let album = Album::from(sdk);
+            let album = Album::from(tidlers_album);
             assert_eq!(album.num_tracks, 0);
             assert_eq!(album.duration, 0);
             assert!(!album.explicit);
@@ -2893,7 +2582,7 @@ mod tests {
 
         #[tokio::test]
         async fn album_request_failure_does_not_return_a_partial_collection() {
-            let result = TidalAppClient::collect_favorites("Favorite albums", |_, offset| {
+            let result = TidalAppClient::collect_pages("Favorite albums", |_, offset| {
                 ready(if offset == 0 {
                     Ok(page(0, 101, 0..100))
                 } else {
@@ -2909,7 +2598,7 @@ mod tests {
         #[tokio::test]
         async fn empty_album_collection_finishes_after_one_request() {
             let mut calls = 0;
-            let albums = TidalAppClient::collect_favorites("Favorite albums", |limit, offset| {
+            let albums = TidalAppClient::collect_pages("Favorite albums", |limit, offset| {
                 calls += 1;
                 assert_eq!((limit, offset), (100, 0));
                 ready(Ok(page(0, 0, 0..0)))
@@ -2925,7 +2614,7 @@ mod tests {
         use super::super::{ApiPaginatedResponse, CollectionFavoriteTracksResponse, TidalAppClient, Track};
         use std::future::ready;
 
-        fn sdk_page(offset: i32, total: i32, ids: std::ops::Range<u64>) -> CollectionFavoriteTracksResponse {
+        fn tidlers_page(offset: i32, total: i32, ids: std::ops::Range<u64>) -> CollectionFavoriteTracksResponse {
             let items: Vec<_> = ids
                 .map(|id| {
                     serde_json::json!({
@@ -2947,17 +2636,17 @@ mod tests {
             serde_json::from_value(serde_json::json!({
                 "items": items, "offset": offset, "limit": 100, "totalNumberOfItems": total
             }))
-            .expect("SDK favourites fixture should deserialize")
+            .expect("tidlers favourites fixture should deserialize")
         }
 
         fn page(offset: i32, total: i32, ids: std::ops::Range<u64>) -> ApiPaginatedResponse<Track> {
-            sdk_page(offset, total, ids).into()
+            tidlers_page(offset, total, ids).into()
         }
 
         #[tokio::test]
         async fn loads_all_pages_in_order_and_preserves_track_metadata() {
             let mut calls = Vec::new();
-            let tracks = TidalAppClient::collect_favorites("Favorite tracks", |limit, offset| {
+            let tracks = TidalAppClient::collect_pages("Favorite tracks", |limit, offset| {
                 calls.push((limit, offset));
                 ready(Ok(match offset {
                     0 => page(0, 205, 0..100),
@@ -2988,7 +2677,7 @@ mod tests {
         #[tokio::test]
         async fn short_pages_advance_by_returned_count_not_requested_limit() {
             let mut offsets = Vec::new();
-            let tracks = TidalAppClient::collect_favorites("Favorite tracks", |_, offset| {
+            let tracks = TidalAppClient::collect_pages("Favorite tracks", |_, offset| {
                 offsets.push(offset);
                 ready(Ok(match offset {
                     0 => page(0, 3, 0..2),
@@ -3006,7 +2695,7 @@ mod tests {
         async fn an_empty_page_stops_even_when_the_reported_total_is_stale() {
             for total in [0, 100] {
                 let mut calls = 0;
-                let tracks = TidalAppClient::collect_favorites("Favorite tracks", |_, offset| {
+                let tracks = TidalAppClient::collect_pages("Favorite tracks", |_, offset| {
                     calls += 1;
                     assert_eq!(offset, 0);
                     ready(Ok(page(0, total, 0..0)))
@@ -3021,7 +2710,7 @@ mod tests {
         #[tokio::test]
         async fn a_later_page_failure_does_not_return_a_partial_collection() {
             let mut offsets = Vec::new();
-            let result = TidalAppClient::collect_favorites("Favorite tracks", |_, offset| {
+            let result = TidalAppClient::collect_pages("Favorite tracks", |_, offset| {
                 offsets.push(offset);
                 ready(if offset == 0 {
                     Ok(page(0, 101, 0..100))
@@ -3039,21 +2728,173 @@ mod tests {
         #[tokio::test]
         async fn wrong_offsets_and_negative_totals_fail_explicitly() {
             // A server that ignores offset repeats the first page.
-            let result = TidalAppClient::collect_favorites("Favorite tracks", |_, _| ready(Ok(page(0, 101, 0..100)))).await;
+            let result = TidalAppClient::collect_pages("Favorite tracks", |_, _| ready(Ok(page(0, 101, 0..100)))).await;
             assert!(result.unwrap_err().to_string().contains("unexpected page offset"));
-            let result = TidalAppClient::collect_favorites("Favorite tracks", |_, _| ready(Ok(page(0, -1, 0..0)))).await;
+            let result = TidalAppClient::collect_pages("Favorite tracks", |_, _| ready(Ok(page(0, -1, 0..0)))).await;
             assert!(result.unwrap_err().to_string().contains("negative total"));
         }
 
         #[tokio::test]
         async fn a_track_without_an_album_still_converts() {
-            let mut response = sdk_page(0, 1, 1..2);
+            let mut response = tidlers_page(0, 1, 1..2);
             response.items[0].item.album = None;
             let mut response = Some(ApiPaginatedResponse::<Track>::from(response));
             let tracks =
-                TidalAppClient::collect_favorites("Favorite tracks", |_, _| ready(Ok(response.take().unwrap()))).await.unwrap();
+                TidalAppClient::collect_pages("Favorite tracks", |_, _| ready(Ok(response.take().unwrap()))).await.unwrap();
             assert!(tracks[0].album_id.is_none());
             assert!(tracks[0].cover_url.is_none());
+        }
+    }
+
+    mod home_feed_mixes {
+        use super::super::home_feed_mixes;
+        use tidlers::client::models::home::HomeItem;
+
+        fn mix(id: &str) -> serde_json::Value {
+            serde_json::json!({
+                "type": "MIX", "following": false,
+                "data": {
+                    "type": "DAILY_MIX", "countryCode": "US", "updated": 1, "id": id, "isStableId": true,
+                    "artifactIdType": "trackGroupId", "mixImages": [], "sortType": "POPULARITY",
+                    "detailMixImages": [], "titleTextInfo": {"text": id, "color": null},
+                    "subtitleTextInfo": {"text": null, "color": null},
+                    "shortSubtitleTextInfo": {"text": null, "color": null},
+                    "description": {"text": null, "color": null}, "contentBehavior": "UNRESTRICTED"
+                }
+            })
+        }
+
+        fn module(kind: &str, items: Vec<serde_json::Value>, header: Option<serde_json::Value>) -> HomeItem {
+            let mut m = serde_json::json!({
+                "type": kind, "moduleId": kind, "title": kind, "icons": [], "showQuickPlay": false,
+                "viewAll": null, "items": items
+            });
+            if let Some(h) = header {
+                m["header"] = h;
+            }
+            serde_json::from_value(m).expect("home module fixture should deserialize")
+        }
+
+        #[test]
+        fn collects_mixes_from_every_module_kind_once_in_feed_order() {
+            let album = serde_json::json!({"type": "ALBUM", "following": false, "data": {"unexpected": true}});
+            let feed = vec![
+                module("SHORTCUT_LIST", vec![mix("a"), album.clone()], None),
+                module("HORIZONTAL_LIST", vec![mix("b"), mix("a")], None),
+                module("HORIZONTAL_LIST_WITH_CONTEXT", vec![mix("c")], Some(mix("d"))),
+                module("TRACK_LIST", vec![album], None),
+            ];
+            let ids: Vec<String> = home_feed_mixes(feed).into_iter().map(|m| m.id).collect();
+            assert_eq!(ids, ["a", "b", "c", "d"]);
+        }
+    }
+
+    mod followed_artists {
+        use super::super::{Artist, TidalAppClient};
+        use std::future::ready;
+        use tidlers::client::models::collection::artist::CollectionArtistsResponse;
+
+        /// A tidlers page in the shape TIDAL returns: one entry per id, every
+        /// third without a picture, and a cursor unless it is the last page.
+        fn tidlers_page(ids: std::ops::Range<i64>, cursor: Option<&str>) -> CollectionArtistsResponse {
+            let items: Vec<_> = ids
+                .map(|id| {
+                    serde_json::json!({
+                        "trn": format!("trn:artist:{id}"), "itemType": "ARTIST",
+                        "addedAt": "2026-01-01T00:00:00.000+0000",
+                        "lastModifiedAt": "2026-01-01T00:00:00.000+0000",
+                        "name": format!("Artist {id}"), "parent": null,
+                        "data": {
+                            "id": id, "name": format!("Artist {id}"),
+                            "picture": if id % 3 == 2 { None } else { Some("aa-bb") },
+                            "popularity": 42, "doublePopularity": 0.42,
+                            "artistTypes": ["ARTIST"],
+                            "artistRoles": [{"categoryId": -1, "category": "Artist"}, {"categoryId": 1, "category": "Producer"}],
+                            "mixes": {"ARTIST_MIX": "abc"}, "vibrantColor": null,
+                            "selectedAlbumCoverFallback": null, "handle": null, "userId": null,
+                            "url": format!("http://www.tidal.com/artist/{id}"),
+                            "trn": format!("trn:artist:{id}"), "itemType": "ARTIST"
+                        }
+                    })
+                })
+                .collect();
+            serde_json::from_value(serde_json::json!({
+                "lastModifiedAt": "2026-01-01T00:00:00.000+0000", "items": items,
+                "totalNumberOfItems": 5, "cursor": cursor
+            }))
+            .expect("tidlers followed-artists fixture should deserialize")
+        }
+
+        type Page = (Vec<Artist>, Option<String>);
+
+        fn page(ids: std::ops::Range<i64>, cursor: Option<&str>) -> Result<Page, tidlers::error::TidalError> {
+            let page = tidlers_page(ids, cursor);
+            Ok((page.items.into_iter().map(|entry| Artist::from(entry.data)).collect(), page.cursor))
+        }
+
+        #[tokio::test]
+        async fn follows_cursors_to_the_last_page_and_converts_artists() {
+            let mut cursors = Vec::new();
+            let artists = TidalAppClient::collect_cursor_pages("Followed artists", |cursor| {
+                cursors.push(cursor.clone());
+                ready(match cursor.as_deref() {
+                    None => page(0..2, Some("c1")),
+                    Some("c1") => page(2..4, Some("c2")),
+                    Some("c2") => page(4..5, None),
+                    Some(other) => panic!("unexpected cursor {other}"),
+                })
+            })
+            .await
+            .unwrap();
+            assert_eq!(cursors, [None, Some("c1".into()), Some("c2".into())]);
+            assert!(artists.iter().enumerate().all(|(i, a)| a.id == i.to_string()));
+
+            let artist = &artists[0];
+            assert_eq!(artist.name, "Artist 0");
+            assert_eq!(artist.picture_url.as_deref(), Some("https://resources.tidal.com/images/aa/bb/320x320.jpg"));
+            assert_eq!(artist.popularity, Some(42));
+            assert_eq!(artist.roles, ["Artist", "Producer"]);
+            assert_eq!(artist.url.as_deref(), Some("http://www.tidal.com/artist/0"));
+            assert_eq!(artists[2].picture_url, None);
+        }
+
+        #[tokio::test]
+        async fn an_empty_page_stops_even_with_a_cursor() {
+            let mut calls = 0;
+            let artists = TidalAppClient::collect_cursor_pages("Followed artists", |_| {
+                calls += 1;
+                ready(page(0..0, Some("more?")))
+            })
+            .await
+            .unwrap();
+            assert_eq!(calls, 1);
+            assert!(artists.is_empty());
+        }
+
+        #[tokio::test]
+        async fn a_repeated_cursor_fails_instead_of_looping() {
+            let mut calls = 0;
+            let result = TidalAppClient::collect_cursor_pages("Followed artists", |_| {
+                calls += 1;
+                ready(page(0..2, Some("stuck")))
+            })
+            .await;
+            assert_eq!(calls, 2);
+            assert!(result.unwrap_err().to_string().contains("same page cursor twice"));
+        }
+
+        #[tokio::test]
+        async fn a_later_page_failure_does_not_return_a_partial_list() {
+            let result = TidalAppClient::collect_cursor_pages("Followed artists", |cursor| {
+                ready(match cursor {
+                    None => page(0..2, Some("c1")),
+                    Some(_) => Err(tidlers::error::TidalError::Other("private upstream detail".into())),
+                })
+            })
+            .await;
+            let error = result.unwrap_err().to_string();
+            assert!(error.contains("Followed artists"));
+            assert!(!error.contains("private upstream detail"));
         }
     }
 
@@ -3288,138 +3129,44 @@ mod tests {
 
     use super::*;
 
+    /// A playlist page captured from TIDAL: a track and a video from the mixed
+    /// "Videos: Best of 2022" playlist, then "In Da Club" from "Classic Hip-Hop
+    /// Videos", whose `artist` is null and `artists` empty.
+    const MIXED_PLAYLIST_PAGE: &str = r##"{"limit":100,"offset":0,"totalNumberOfItems":3,"items":[{"item":{"id":231039906,"title":"Blacklight Shine","duration":176,"replayGain":-9.85,"peak":1.0,"allowStreaming":true,"streamReady":true,"payToStream":false,"adSupportedStreamReady":true,"djReady":true,"stemReady":false,"streamStartDate":"2022-06-21T00:00:00.000+0000","premiumStreamingOnly":false,"trackNumber":1,"volumeNumber":1,"version":null,"popularity":53,"copyright":"℗ 2022 Clouds Hill","bpm":118,"key":"F","keyScale":"MINOR","description":null,"url":"http://www.tidal.com/track/231039906","isrc":"DELK22100395","editable":false,"explicit":false,"audioQuality":"LOSSLESS","audioModes":["STEREO"],"mediaMetadata":{"tags":["LOSSLESS","HIRES_LOSSLESS"]},"upload":false,"accessType":"PUBLIC","spotlighted":false,"ai":false,"artist":{"id":24959,"name":"The Mars Volta","handle":null,"type":"MAIN","picture":"bb43a530-957f-48b8-8ab2-710500bff8a7"},"artists":[{"id":24959,"name":"The Mars Volta","handle":null,"type":"MAIN","picture":"bb43a530-957f-48b8-8ab2-710500bff8a7"}],"album":{"id":231039905,"title":"Blacklight Shine","cover":"8538e8f2-3e29-4372-95a3-d3e52233a938","vibrantColor":"#c4a25a","videoCover":null,"releaseDate":"2022-06-21"},"mixes":{"TRACK_MIX":"001dbef3f7310332d0df126a80864b"},"dateAdded":"2022-11-29T20:58:16.823+0000","index":3100000,"itemUuid":"b5141c46-e994-40aa-9af1-f14e694b9063"},"type":"track","cut":null},{"item":{"id":245978483,"title":"Kill to Be Heard","volumeNumber":0,"trackNumber":0,"releaseDate":"2022-09-01T00:00:00.000+0000","imagePath":null,"imageId":"06716ff5-d80f-448c-bf37-916e12ca07e5","vibrantColor":"#30566e","duration":119,"quality":"MP4_1080P","streamReady":true,"adSupportedStreamReady":true,"djReady":true,"stemReady":false,"streamStartDate":"2022-09-01T00:00:00.000+0000","allowStreaming":true,"explicit":true,"popularity":1,"type":"Music Video","adsUrl":null,"adsPrePaywallOnly":true,"artist":{"id":3970187,"name":"OFF!","handle":null,"type":"MAIN","picture":"d257ccb0-bce4-41a3-b02a-2dfe03247d34"},"artists":[{"id":3970187,"name":"OFF!","handle":null,"type":"MAIN","picture":"d257ccb0-bce4-41a3-b02a-2dfe03247d34"}],"album":null,"dateAdded":"2022-11-29T20:58:16.823+0000","index":2900000,"itemUuid":"98376c20-44e8-4d4b-ad82-c3a1a18034e6"},"type":"video","cut":null},{"item":{"id":37690657,"title":"In Da Club","volumeNumber":0,"trackNumber":0,"releaseDate":"2004-01-01T00:00:00.000+0000","imagePath":null,"imageId":"410fbd9a-1c6e-448a-9c93-094fd99c295c","vibrantColor":"#83403d","duration":248,"quality":"MP4_1080P","streamReady":false,"adSupportedStreamReady":false,"djReady":false,"stemReady":false,"streamStartDate":null,"allowStreaming":false,"explicit":false,"popularity":59,"type":"Music Video","adsUrl":null,"adsPrePaywallOnly":true,"artist":null,"artists":[],"album":null,"dateAdded":"2024-05-17T19:15:36.849+0000","index":2300000,"itemUuid":"80b97b08-79d0-4a13-bbd4-c593044f92d2"},"type":"video","cut":null}]}"##;
+
     #[test]
-    fn playlist_items_with_a_null_album_video_still_parse() {
-        // A trimmed `GET /v1/playlists/{uuid}/items` page: one regular track and
-        // one music-video item whose `album` is null — the case that used to
-        // fail deserialization for the whole playlist.
-        let json = r#"{
-            "totalNumberOfItems": 2,
-            "items": [
-                {
-                    "item": {
-                        "id": 123,
-                        "title": "A Song",
-                        "duration": 200,
-                        "trackNumber": 1,
-                        "explicit": false,
-                        "audioQuality": "LOSSLESS",
-                        "artist": { "id": 1, "name": "An Artist" },
-                        "album": { "id": 9, "title": "An Album", "cover": "ab/cd/ef" }
-                    },
-                    "type": "track"
-                },
-                {
-                    "item": {
-                        "id": 456,
-                        "title": "A Music Video",
-                        "duration": 240,
-                        "artist": { "id": 2, "name": "Another Artist" },
-                        "album": null,
-                        "imageId": "7bd9a4c2-424a-49cf-afd9-31f6e526a71e"
-                    },
-                    "type": "video"
-                }
-            ]
-        }"#;
+    fn playlist_pages_map_tracks_and_videos() {
+        let page: PlaylistItemsResponse = serde_json::from_str(MIXED_PLAYLIST_PAGE).expect("captured page should parse");
+        let page = ApiPaginatedResponse::<Track>::from(page);
+        assert_eq!((page.offset, page.total_number_of_items), (0, 3));
+        let [track, video, artistless] = page.items.as_slice() else { panic!("expected three entries") };
 
-        let parsed: ApiPaginatedResponse<ApiItemWrapper<ApiTrackData>> =
-            serde_json::from_str(json).expect("video playlist item should parse");
-
-        let tracks: Vec<Track> = parsed
-            .items
-            .into_iter()
-            .filter_map(|w| {
-                let is_video = w.item_type.as_deref() == Some("video");
-                w.item.map(|it| {
-                    let mut t = Track::from(it);
-                    t.is_video = is_video;
-                    t
-                })
-            })
-            .collect();
-
-        assert_eq!(tracks.len(), 2);
-
-        // Regular track keeps its album metadata and is not a video.
-        assert_eq!(tracks[0].title, "A Song");
-        assert_eq!(tracks[0].album_name.as_deref(), Some("An Album"));
-        assert!(tracks[0].cover_url.is_some());
-        assert!(!tracks[0].is_video);
-
-        // Video item loads with no album, but its `imageId` provides a cover,
-        // and it's flagged as a video.
-        assert_eq!(tracks[1].title, "A Music Video");
-        assert_eq!(tracks[1].album_name, None);
-        assert_eq!(tracks[1].album_id, None);
-        assert!(tracks[1].is_video);
+        assert_eq!(track.title, "Blacklight Shine");
+        assert!(!track.is_video);
+        assert_eq!(track.artist_id.as_deref(), Some("24959"));
+        assert_eq!(track.album_name.as_deref(), Some("Blacklight Shine"));
+        assert_eq!(track.audio_quality.as_deref(), Some("LOSSLESS"));
         assert_eq!(
-            tracks[1].cover_url.as_deref(),
-            Some("https://resources.tidal.com/images/7bd9a4c2/424a/49cf/afd9/31f6e526a71e/320x320.jpg")
+            track.cover_url.as_deref(),
+            Some("https://resources.tidal.com/images/8538e8f2/3e29/4372/95a3/d3e52233a938/320x320.jpg")
         );
-        assert_eq!(tracks[1].artist_name, "Another Artist");
-    }
 
-    #[test]
-    fn playlist_items_with_a_null_artist_video_still_parse() {
-        // The real-world failure from "Classic Hip-Hop Videos" under Explore:
-        // a video item whose singular `artist` is null. It must fall back to
-        // the `artists` list, and an item with neither must still parse.
-        let json = r#"{
-            "totalNumberOfItems": 2,
-            "items": [
-                {
-                    "item": {
-                        "id": 456,
-                        "title": "A Music Video",
-                        "duration": 240,
-                        "artist": null,
-                        "artists": [{ "id": 7, "name": "Video Artist" }],
-                        "album": null,
-                        "imageId": "7bd9a4c2-424a-49cf-afd9-31f6e526a71e"
-                    },
-                    "type": "video"
-                },
-                {
-                    "item": {
-                        "id": 789,
-                        "title": "An Artist-less Video",
-                        "duration": 100,
-                        "artist": null,
-                        "album": null
-                    },
-                    "type": "video"
-                }
-            ]
-        }"#;
+        // Videos have no album; their `imageId` is the cover.
+        assert_eq!(video.title, "Kill to Be Heard");
+        assert!(video.is_video);
+        assert_eq!(video.artist_name, "OFF!");
+        assert_eq!(video.artist_id.as_deref(), Some("3970187"));
+        assert_eq!(video.album_id, None);
+        assert_eq!(video.audio_quality, None);
+        assert_eq!(
+            video.cover_url.as_deref(),
+            Some("https://resources.tidal.com/images/06716ff5/d80f/448c/bf37/916e12ca07e5/320x320.jpg")
+        );
 
-        let parsed: ApiPaginatedResponse<ApiItemWrapper<ApiTrackData>> =
-            serde_json::from_str(json).expect("null-artist video item should parse");
-
-        let tracks: Vec<Track> = parsed
-            .items
-            .into_iter()
-            .filter_map(|w| {
-                let is_video = w.item_type.as_deref() == Some("video");
-                w.item.map(|it| {
-                    let mut t = Track::from(it);
-                    t.is_video = is_video;
-                    t
-                })
-            })
-            .collect();
-
-        assert_eq!(tracks.len(), 2);
-
-        // Null `artist` falls back to the first of `artists`.
-        assert_eq!(tracks[0].title, "A Music Video");
-        assert_eq!(tracks[0].artist_name, "Video Artist");
-        assert_eq!(tracks[0].artist_id.as_deref(), Some("7"));
-        assert!(tracks[0].is_video);
-
-        // No artist at all degrades gracefully rather than failing the parse.
-        assert_eq!(tracks[1].title, "An Artist-less Video");
-        assert_eq!(tracks[1].artist_name, "Unknown Artist");
-        assert_eq!(tracks[1].artist_id, None);
+        // No artist at all degrades to a name without a link.
+        assert_eq!(artistless.title, "In Da Club");
+        assert!(artistless.is_video);
+        assert_eq!(artistless.artist_name, "Unknown Artist");
+        assert_eq!(artistless.artist_id, None);
     }
 }

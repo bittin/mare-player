@@ -128,7 +128,9 @@ class SpecTests(unittest.TestCase):
                                    "CHANGELOG_DATE": "Wed Sep 30 2026"}.items():
                     text = text.replace(f"@{key}@", value)
                 spec.write_text(text)
-                parsed = subprocess.check_output(["rpmspec", "--parse", str(spec)], text=True)
+                # %{SOURCE1} resolves to the shared script in packaging/.
+                parsed = subprocess.check_output(
+                    ["rpmspec", "--define", f"_sourcedir {PACKAGING.parent}", "--parse", str(spec)], text=True)
                 self.assertIn(f"Name:           {name}", parsed)
                 self.assertIn(f"Conflicts:      {conflict}", parsed)
                 self.assertEqual("--no-default-features --features wgpu" in parsed, not applet)
@@ -153,6 +155,7 @@ class SpecTests(unittest.TestCase):
                 self.assertEqual("X-CosmicApplet=true" in desktop.read_text(), bool(applet))
                 self.assertIn("MimeType=x-scheme-handler/tidal;", desktop.read_text())
                 self.assertEqual(ET.parse(resources / "app.metainfo.xml").find("provides/binary").text, name)
+                self.assertIn("Source1:        standalone-resources.sh", parsed)
 
 
 if __name__ == "__main__":

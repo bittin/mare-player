@@ -1,0 +1,68 @@
+name: Project site
+
+# Publishes site/ (plus artwork from resources/) to GitHub Pages at
+# https://glima.github.io/mare-player/. `just site` assembles it, the same
+# recipe used to preview it locally.
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "site/**"
+      - "resources/icon.svg"
+      - "resources/screenshot_*.png"
+      - "justfile"
+      - ".github/workflows/pages.yml"
+  # Refresh the download links once a release has published its assets.
+  # (`release: published` never fires here: the Release workflow creates
+  # releases with GITHUB_TOKEN, which does not trigger other workflows.)
+  workflow_run:
+    workflows: ["Release"]
+    types: [completed]
+  workflow_dispatch:
+
+permissions: read-all
+
+# One deployment at a time; a newer push supersedes a queued one, but a
+# deployment already under way is allowed to finish.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install just
+        uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4.0.0
+
+      - name: Assemble the site
+        env:
+          GH_TOKEN: ${{ github.token }} # read the latest release's asset list
+        run: just site _site
+
+      - name: Configure Pages
+        uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
+
+      - name: Upload the site
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write # publish the uploaded site
+      id-token: write # prove to Pages that this run is the deployer
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1
