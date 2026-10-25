@@ -122,6 +122,8 @@ account = Account
 about = Over
 version = Versie
 explicit = Expliciet
+logging = Logboek
+logging-description = Hoeveel Maré naar het systeemjournaal schrijft. Wordt direct toegepast.
 
 # Geschiedenis
 clear-history = Geschiedenis wissen

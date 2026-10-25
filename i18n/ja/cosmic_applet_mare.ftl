@@ -116,6 +116,8 @@ account = アカウント
 about = このアプリについて
 version = バージョン
 explicit = 不適切な表現あり
+logging = ログ
+logging-description = Maré がシステムジャーナルに書き込む量。すぐに反映されます。
 
 # 履歴
 clear-history = 履歴をクリア

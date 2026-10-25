@@ -116,6 +116,8 @@ account = 계정
 about = 정보
 version = 버전
 explicit = 성인용
+logging = 로깅
+logging-description = Maré가 시스템 저널에 기록하는 양입니다. 즉시 적용됩니다.
 
 # History
 clear-history = 기록 지우기

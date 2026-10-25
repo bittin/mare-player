@@ -142,6 +142,8 @@ account = Account
 about = About
 version = Version
 explicit = Explicit
+logging = Logging
+logging-description = How much Maré writes to the system journal. Applies immediately.
 
 # History
 clear-history = Clear History

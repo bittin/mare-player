@@ -122,6 +122,8 @@ account = खाता
 about = बारे में
 version = संस्करण
 explicit = अश्लील
+logging = लॉगिंग
+logging-description = Maré सिस्टम जर्नल में कितना लिखता है। तुरंत लागू होता है।
 
 # History
 clear-history = इतिहास साफ़ करें

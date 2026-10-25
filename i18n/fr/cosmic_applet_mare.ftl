@@ -122,6 +122,8 @@ account = Compte
 about = À propos
 version = Version
 explicit = Explicite
+logging = Journalisation
+logging-description = Quantité d’informations que Maré écrit dans le journal système. S’applique immédiatement.
 
 # Historique
 clear-history = Effacer l'historique

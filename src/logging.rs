@@ -2,11 +2,14 @@
 
 //! Runtime-adjustable console log level.
 //!
+//! The console layer is mare's only log output: it writes to stderr, which
+//! cosmic-panel forwards to the systemd journal (and which is the terminal
+//! when the standalone build is run from one).
+//!
 //! `main` builds the tracing subscriber with the console `EnvFilter` wrapped in
 //! a [`tracing_subscriber::reload`] layer, then installs a reload hook here via
 //! [`install_reload_hook`]. The Settings view calls [`set_console_level`] to
-//! change verbosity **live**, without a restart. The on-disk debug log is a
-//! separate layer and is unaffected.
+//! change verbosity **live**, without a restart.
 
 use std::sync::OnceLock;
 

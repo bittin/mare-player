@@ -122,6 +122,8 @@ account = অ্যাকাউন্ট
 about = সম্পর্কে
 version = সংস্করণ
 explicit = স্পষ্ট
+logging = লগিং
+logging-description = Maré সিস্টেম জার্নালে কতটা লেখে। সঙ্গে সঙ্গে প্রযোজ্য হয়।
 
 # ইতিহাস
 clear-history = ইতিহাস মুছুন

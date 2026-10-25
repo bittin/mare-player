@@ -126,6 +126,8 @@ account = Konto
 about = O programie
 version = Wersja
 explicit = Treści dla dorosłych
+logging = Logowanie
+logging-description = Ile Maré zapisuje w dzienniku systemowym. Zmiana działa od razu.
 
 # History
 clear-history = Wyczyść historię

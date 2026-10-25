@@ -122,6 +122,8 @@ account = Konto
 about = Om
 version = Version
 explicit = Explicit
+logging = Loggning
+logging-description = Hur mycket Maré skriver till systemjournalen. Gäller direkt.
 
 # Historik
 clear-history = Rensa historik

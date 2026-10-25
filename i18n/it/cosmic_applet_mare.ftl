@@ -122,6 +122,8 @@ account = Account
 about = Informazioni
 version = Versione
 explicit = Contenuto esplicito
+logging = Registrazione
+logging-description = Quanto Maré scrive nel journal di sistema. Si applica subito.
 
 # Cronologia
 clear-history = Cancella cronologia
