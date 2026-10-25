@@ -206,7 +206,6 @@ impl cosmic::Application for AppModel {
             mpris_command_rx: None,
             search_debounce_version: 0,
             visualizer_state,
-            loading_progress: 0.0,
             pending_seek: None,
             seek_debounce_version: 0,
             playback_resolve_version: 0,

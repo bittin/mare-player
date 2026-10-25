@@ -451,9 +451,10 @@ pub struct MediaPlayer {
 impl MediaPlayer {
     /// Start playing an **audio** stream from `uri`.
     ///
-    /// `uri` is a GStreamer URI: `file:///tmp/<id>.mpd` for a DASH manifest
-    /// written to disk, or a direct `https://…` URL for single-file/BTS
-    /// qualities. `replay_gain_db` is TIDAL's authored album replay gain.
+    /// `uri` is a GStreamer URI: a `data:application/dash+xml` URI carrying
+    /// the DASH manifest inline (see `PlaybackUrl::as_url`), or a direct
+    /// `https://…` URL for single-file/BTS qualities. `replay_gain_db` is
+    /// TIDAL's authored album replay gain.
     pub fn new_audio(uri: &str, analyzer: Option<SharedSpectrumAnalyzer>, replay_gain_db: f32) -> Result<Self, String> {
         Self::build(uri, MediaKind::Audio, analyzer, replay_gain_db, None)
     }

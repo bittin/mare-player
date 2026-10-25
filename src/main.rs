@@ -4,7 +4,7 @@
 //! music from the TIDAL service.
 //!
 //! The applet provides library browsing, search, Hi-Res audio playback
-//! (symphonia + PulseAudio), a real-time spectrum visualizer, MPRIS2 media
+//! (GStreamer), a real-time spectrum visualizer, MPRIS2 media
 //! control, and local disk caching — all integrated into the COSMIC panel.
 
 #[cfg(not(feature = "panel-applet"))]

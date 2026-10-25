@@ -460,8 +460,6 @@ pub struct AppModel {
     pub(crate) search_debounce_version: u64,
     /// Audio visualizer state
     pub(crate) visualizer_state: VisualizerState,
-    /// Download/buffering progress (0.0 to 1.0) for the current loading track
-    pub(crate) loading_progress: f32,
     /// Pending seek position (for debouncing slider drags)
     pub(crate) pending_seek: Option<f64>,
     /// Seek debounce version counter
