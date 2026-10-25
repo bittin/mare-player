@@ -5,8 +5,8 @@
 //! Shows a list of recommended/similar tracks generated from a seed track,
 //! mirroring TIDAL's "Go to track radio" feature.
 //!
-//! Track rows are rendered through a virtual `List` — only the rows
-//! visible in the scroll viewport are materialised.
+//! Track rows are rendered through [`AppModel::track_list`]: only the rows
+//! visible in the scroll viewport are built.
 
 use std::sync::Arc;
 
@@ -17,8 +17,7 @@ use cosmic::widget::{self, button, text};
 use crate::fl;
 use crate::messages::Message;
 use crate::state::AppModel;
-use crate::views::components::rows::build_track_row;
-use crate::views::components::{TrackRowOptions, back_button, fading_header_title, scrollable_element, virtual_list_row};
+use crate::views::components::{TrackRowOptions, back_button, fading_header_title, scrollable_element};
 
 impl AppModel {
     /// Render the track radio view showing similar tracks based on a seed track.
@@ -64,7 +63,6 @@ impl AppModel {
         } else if self.selected_radio_tracks.is_empty() {
             text(fl!("no-radio-tracks")).size(14).into()
         } else {
-            let loaded_images = &self.loaded_images;
             let opts = TrackRowOptions {
                 tracks: Arc::clone(&self.track_list_arc),
                 source: Some(radio_source),
@@ -72,9 +70,7 @@ impl AppModel {
                 ..self.track_row_options()
             };
 
-            let track_list = cosmic::iced::widget::list::List::new(&self.track_list_content, move |index, track| {
-                virtual_list_row(build_track_row(loaded_images, track, index, &opts), 2)
-            });
+            let track_list = self.track_list(opts);
 
             scrollable_element(track_list)
         };

@@ -26,8 +26,9 @@ use crate::state::{AppModel, HandleCache};
 use crate::tidal::models::{Album, Artist, Playlist, Track};
 
 use super::constants::THUMBNAIL_SIZE;
+use super::fixed_height_list::FixedHeightList;
 use super::icons::RADIO_SVG;
-use super::list_helpers::{TrackRowOptions, fading_text_column, list_item};
+use super::list_helpers::{TrackRowOptions, fading_text_column, list_item, virtual_list_row};
 
 // =============================================================================
 // Free-standing builders (usable without `&self`)
@@ -207,6 +208,20 @@ impl AppModel {
         build_track_row(&self.loaded_images, track, index, opts)
     }
 
+    /// The active track list ([`track_list_arc`](AppModel::track_list_arc)) as
+    /// a virtual list of track rows, for every track-list view.
+    ///
+    /// Only the rows in view are built, so opening a list costs the same
+    /// whatever its length, and covers load only for rows that are shown.
+    /// See [`FixedHeightList`] for why track rows don't need measuring.
+    pub(crate) fn track_list(&self, opts: TrackRowOptions) -> Element<'_, Message> {
+        let loaded_images = &self.loaded_images;
+        FixedHeightList::new(&self.track_list_arc, move |index, track| {
+            virtual_list_row(build_track_row(loaded_images, track, index, &opts), 2)
+        })
+        .into()
+    }
+
     /// Create an album list-item element (thumbnail + title + artist).
     ///
     /// Used in the albums list, search results, and anywhere an album appears
@@ -367,5 +382,38 @@ mod tests {
             matches!(messages.as_slice(), [Message::PlayTrackList(tracks, 0, None)] if tracks.first().is_some_and(|t| t.id == "seed"))
         );
         assert_eq!(captured, [true, true]);
+    }
+
+    /// `FixedHeightList` places track row `i` at `i ×` the first row's
+    /// height, so every kind of track row must be exactly as tall.
+    #[test]
+    fn every_kind_of_track_row_is_equally_tall() {
+        use cosmic::iced::core::{Size, layout, widget::Tree};
+
+        let height = |track: Track, opts: TrackRowOptions| {
+            let renderer = cosmic::Renderer::new(cosmic::iced::Font::default(), 14.0.into());
+            let mut row = super::virtual_list_row(build_track_row(&HandleCache::new(0), &track, 0, &opts), 2);
+            let mut tree = Tree::new(row.as_widget());
+            let limits = layout::Limits::new(Size::ZERO, Size::new(300.0, f32::INFINITY));
+            row.as_widget_mut().layout(&mut tree, &renderer, &limits).size().height
+        };
+        let opts = || TrackRowOptions { tracks: Arc::from([track()]), ..Default::default() };
+
+        let plain = height(Track { artist_name: "Artist".into(), ..track() }, opts());
+        let variants = [
+            ("video", height(Track { is_video: true, ..track() }, opts())),
+            ("no radio button", height(track(), TrackRowOptions { show_radio_button: false, ..opts() })),
+            (
+                "radio unavailable",
+                height(track(), TrackRowOptions { unavailable_radio_tracks: Arc::new(HashSet::from(["seed".into()])), ..opts() }),
+            ),
+            ("empty artist", height(Track { artist_name: String::new(), ..track() }, opts())),
+            ("long texts", height(Track { title: "Title ".repeat(40), artist_name: "Artist ".repeat(40), ..track() }, opts())),
+            ("long duration", height(Track { duration: 10 * 3600, ..track() }, opts())),
+        ];
+        assert!(plain > 0.0);
+        for (kind, h) in variants {
+            assert_eq!(h, plain, "a {kind} track row is {h}px tall, other rows {plain}px");
+        }
     }
 }

@@ -226,15 +226,12 @@ impl AppModel {
         self.rebuild_history_track_list();
 
         // Eager-preload covers for the first ~30 history entries (enough to
-        // populate the initial viewport without a network round-trip per
-        // visible row).  Beyond that, `HandleCache::get_or_request` lazy-loads
-        // covers as rows scroll into view — critical for users whose history
-        // has accumulated hundreds or thousands of entries, where eager-
-        // preloading everything would saturate the CDN and the LRU cache.
+        // populate the initial viewport in one batch).  Beyond that, rows
+        // request their own covers via `HandleCache::get_or_request` as they
+        // scroll into view.
         const HISTORY_EAGER_PRELOAD: usize = 30;
-        let urls: Vec<String> = (0..self.track_list_content.len().min(HISTORY_EAGER_PRELOAD))
-            .filter_map(|i| self.track_list_content.get(i).and_then(|t| t.cover_url.clone()))
-            .collect();
+        let urls: Vec<String> =
+            self.track_list_arc.iter().take(HISTORY_EAGER_PRELOAD).filter_map(|t| t.cover_url.clone()).collect();
         if urls.is_empty() { Task::none() } else { self.load_images_for_urls(urls) }
     }
 
@@ -603,7 +600,7 @@ impl AppModel {
     ///
     /// This serves two purposes:
     ///
-    /// 1. Correctness. Several views share the single `track_list_content`
+    /// 1. Correctness. Several views share the single `track_list_arc`
     ///    field, and the per-view `selected_*` source vectors are only
     ///    repopulated on forward navigation. Without rebuilding here, going
     ///    back to a parent track view (e.g. TrackRadio -> back -> PlaylistDetail)

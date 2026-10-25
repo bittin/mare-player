@@ -106,7 +106,6 @@ impl cosmic::Application for AppModel {
             popup: None,
             tidal_client: Arc::new(Mutex::new(client)),
             play_history,
-            track_list_content: Default::default(),
             track_list_arc: Arc::from([]),
             history_filter_visible: false,
             history_filter_query: String::new(),

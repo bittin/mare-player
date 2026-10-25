@@ -19,7 +19,7 @@ use crate::helpers::max_description_chars;
 use crate::messages::Message;
 use crate::state::AppModel;
 use crate::views::artist::strip_markup;
-use crate::views::components::rows::{build_album_row, build_track_row};
+use crate::views::components::rows::build_album_row;
 use crate::views::components::{
     ALBUM_COVER_SIZE, TrackRowOptions, back_button, fading_header_title, favorite_icon_handle, scrollable_element,
     scrollable_list, virtual_list_row,
@@ -78,7 +78,7 @@ impl AppModel {
         header = header.push(
             button::icon(widget::icon::from_name("media-playlist-shuffle-symbolic"))
                 .tooltip(fl!("tooltip-shuffle-play"))
-                .on_press_maybe(if self.track_list_content.is_empty() {
+                .on_press_maybe(if self.track_list_arc.is_empty() {
                     None
                 } else {
                     Some(Message::ShufflePlay(
@@ -109,13 +109,8 @@ impl AppModel {
         } else {
             let source =
                 self.selected_album.as_ref().map(|a| crate::tidal::models::PlaybackSource::album(a.id.clone(), a.title.clone()));
-            let loaded_images = &self.loaded_images;
             let opts = TrackRowOptions { tracks: Arc::clone(&self.track_list_arc), source, ..self.track_row_options() };
-            let track_list = cosmic::iced::widget::list::List::new(&self.track_list_content, move |index, track| {
-                virtual_list_row(build_track_row(loaded_images, track, index, &opts), 2)
-            });
-
-            track_list.into()
+            self.track_list(opts)
         };
 
         body = body.push(tracks_content);
