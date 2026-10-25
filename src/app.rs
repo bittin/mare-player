@@ -845,7 +845,6 @@ impl cosmic::Application for AppModel {
             Message::PreloadNextTrack => self.handle_preload_next_track(),
             Message::ResolvePlaybackDebounced(v) => self.handle_resolve_playback_debounced(v),
             Message::PreloadUrlReceived(result) => self.handle_preload_url_received(result),
-            Message::GaplessTransition => self.handle_gapless_transition(),
             Message::SeekTo(percent) => self.handle_seek_to(percent),
             Message::SeekDebounced(version) => self.handle_seek_debounced(version),
             Message::TogglePlayPause => self.handle_toggle_play_pause(),

@@ -1225,17 +1225,6 @@ impl AppModel {
         Task::none()
     }
 
-    /// Handle a gapless transition message from the UI layer.
-    ///
-    /// Most of the real work (queue advancement, metadata update) is done
-    /// inside the `PlayerEvent::PreloadConsumed` arm of `handle_playback_tick`.
-    /// This message exists so other parts of the app can react to the
-    /// transition (e.g. update MPRIS metadata).
-    pub fn handle_gapless_transition(&mut self) -> Task<cosmic::Action<Message>> {
-        tracing::info!("Gapless transition acknowledged");
-        self.update_mpris_state()
-    }
-
     // ═══ TIDAL play attribution helpers ════════════════════════════════════
 
     /// Open a new in-progress play session for `track`.
