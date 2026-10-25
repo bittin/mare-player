@@ -16,12 +16,8 @@ use std::sync::Arc;
 use tokio::sync::{Mutex, mpsc, watch};
 use tracing::{debug, info, warn};
 use zbus::{
-    Connection,
-    connection::Builder,
-    interface,
-    names::InterfaceName,
+    Connection, ObjectPath, OwnedObjectPath, OwnedVariant, Variant, connection::Builder, interface, names::InterfaceName,
     object_server::SignalEmitter,
-    zvariant::{ObjectPath, OwnedObjectPath, OwnedValue, Value},
 };
 
 /// MPRIS player name (appears after org.mpris.MediaPlayer2.)
@@ -166,7 +162,7 @@ impl MprisMetadata {
     }
 
     /// Convert to D-Bus metadata dictionary
-    fn to_dbus_metadata(&self) -> HashMap<String, OwnedValue> {
+    fn to_dbus_metadata(&self) -> HashMap<String, OwnedVariant> {
         let mut map = HashMap::new();
 
         // Track ID (required)
@@ -176,28 +172,28 @@ impl MprisMetadata {
             format!("{}/{}", MPRIS_TRACK_PREFIX, self.track_id)
         };
         if let Ok(path) = ObjectPath::try_from(track_path.as_str())
-            && let Ok(owned) = Value::ObjectPath(path).try_into()
+            && let Ok(owned) = Variant::ObjectPath(path).try_into()
         {
             map.insert("mpris:trackid".to_string(), owned);
         }
 
         // Length (duration in microseconds)
         if self.length_us > 0
-            && let Ok(owned) = Value::I64(self.length_us).try_into()
+            && let Ok(owned) = Variant::I64(self.length_us).try_into()
         {
             map.insert("mpris:length".to_string(), owned);
         }
 
         // Art URL
         if let Some(ref url) = self.art_url
-            && let Ok(owned) = Value::Str(url.as_str().into()).try_into()
+            && let Ok(owned) = Variant::Str(url.as_str().into()).try_into()
         {
             map.insert("mpris:artUrl".to_string(), owned);
         }
 
         // Title
         if !self.title.is_empty()
-            && let Ok(owned) = Value::Str(self.title.as_str().into()).try_into()
+            && let Ok(owned) = Variant::Str(self.title.as_str().into()).try_into()
         {
             map.insert("xesam:title".to_string(), owned);
         }
@@ -205,14 +201,14 @@ impl MprisMetadata {
         // Artists
         if !self.artists.is_empty() {
             let artists: Vec<&str> = self.artists.iter().map(|s| s.as_str()).collect();
-            if let Ok(owned) = Value::Array(artists.into()).try_into() {
+            if let Ok(owned) = Variant::Array(artists.into()).try_into() {
                 map.insert("xesam:artist".to_string(), owned);
             }
         }
 
         // Album
         if let Some(ref album) = self.album
-            && let Ok(owned) = Value::Str(album.as_str().into()).try_into()
+            && let Ok(owned) = Variant::Str(album.as_str().into()).try_into()
         {
             map.insert("xesam:album".to_string(), owned);
         }
@@ -220,21 +216,21 @@ impl MprisMetadata {
         // Album artists
         if !self.album_artists.is_empty() {
             let artists: Vec<&str> = self.album_artists.iter().map(|s| s.as_str()).collect();
-            if let Ok(owned) = Value::Array(artists.into()).try_into() {
+            if let Ok(owned) = Variant::Array(artists.into()).try_into() {
                 map.insert("xesam:albumArtist".to_string(), owned);
             }
         }
 
         // Track number
         if let Some(num) = self.track_number
-            && let Ok(owned) = Value::I32(num).try_into()
+            && let Ok(owned) = Variant::I32(num).try_into()
         {
             map.insert("xesam:trackNumber".to_string(), owned);
         }
 
         // Disc number
         if let Some(num) = self.disc_number
-            && let Ok(owned) = Value::I32(num).try_into()
+            && let Ok(owned) = Variant::I32(num).try_into()
         {
             map.insert("xesam:discNumber".to_string(), owned);
         }
@@ -452,28 +448,28 @@ impl MprisPlayer {
     async fn emit_properties_changed(emitter: &SignalEmitter<'_>, state: &MprisState) -> zbus::Result<()> {
         use zbus::fdo::Properties;
 
-        let mut changed: HashMap<&str, Value<'_>> = HashMap::new();
+        let mut changed: HashMap<&str, Variant<'_>> = HashMap::new();
 
         // Always include these in the changed properties
-        changed.insert("PlaybackStatus", Value::Str(state.playback_status.as_str().into()));
+        changed.insert("PlaybackStatus", Variant::Str(state.playback_status.as_str().into()));
 
         // Convert metadata to owned value
         let metadata_map = state.metadata.to_dbus_metadata();
         // Create a Dict from the metadata - we need to convert to borrowed values
-        let metadata_borrowed: HashMap<&str, Value<'_>> = HashMap::new();
+        let metadata_borrowed: HashMap<&str, Variant<'_>> = HashMap::new();
         // For simplicity, skip metadata in the changed signal for now
         // The property getter will return the correct value
         let _ = metadata_map;
         let _ = metadata_borrowed;
 
-        changed.insert("Volume", Value::F64(state.volume));
-        changed.insert("Shuffle", Value::Bool(state.shuffle));
-        changed.insert("LoopStatus", Value::Str(state.loop_status.as_str().into()));
-        changed.insert("CanGoNext", Value::Bool(state.can_go_next));
-        changed.insert("CanGoPrevious", Value::Bool(state.can_go_previous));
-        changed.insert("CanPlay", Value::Bool(state.can_play));
-        changed.insert("CanPause", Value::Bool(state.can_pause));
-        changed.insert("CanSeek", Value::Bool(state.can_seek));
+        changed.insert("Volume", Variant::F64(state.volume));
+        changed.insert("Shuffle", Variant::Bool(state.shuffle));
+        changed.insert("LoopStatus", Variant::Str(state.loop_status.as_str().into()));
+        changed.insert("CanGoNext", Variant::Bool(state.can_go_next));
+        changed.insert("CanGoPrevious", Variant::Bool(state.can_go_previous));
+        changed.insert("CanPlay", Variant::Bool(state.can_play));
+        changed.insert("CanPause", Variant::Bool(state.can_pause));
+        changed.insert("CanSeek", Variant::Bool(state.can_seek));
 
         // Emit the signal
         let interface_name = InterfaceName::try_from("org.mpris.MediaPlayer2.Player")
@@ -599,7 +595,7 @@ impl MprisPlayer {
 
     /// Current track metadata
     #[zbus(property)]
-    fn metadata(&self) -> HashMap<String, OwnedValue> {
+    fn metadata(&self) -> HashMap<String, OwnedVariant> {
         self.state_rx.borrow().metadata.to_dbus_metadata()
     }
 
@@ -690,7 +686,7 @@ struct MprisTrackList {
 #[interface(name = "org.mpris.MediaPlayer2.TrackList")]
 impl MprisTrackList {
     /// Get metadata for a set of tracks.
-    fn get_tracks_metadata(&self, track_ids: Vec<ObjectPath<'_>>) -> Vec<HashMap<String, OwnedValue>> {
+    fn get_tracks_metadata(&self, track_ids: Vec<ObjectPath<'_>>) -> Vec<HashMap<String, OwnedVariant>> {
         let state = self.state_rx.borrow();
         track_ids
             .iter()
@@ -729,7 +725,7 @@ impl MprisTrackList {
     #[zbus(signal)]
     async fn track_added(
         emitter: &SignalEmitter<'_>,
-        metadata: HashMap<String, OwnedValue>,
+        metadata: HashMap<String, OwnedVariant>,
         after_track: ObjectPath<'_>,
     ) -> zbus::Result<()>;
 
@@ -742,7 +738,7 @@ impl MprisTrackList {
     async fn track_metadata_changed(
         emitter: &SignalEmitter<'_>,
         track_id: ObjectPath<'_>,
-        metadata: HashMap<String, OwnedValue>,
+        metadata: HashMap<String, OwnedVariant>,
     ) -> zbus::Result<()>;
 
     /// The ordered list of track object paths in the tracklist.
@@ -780,19 +776,15 @@ pub async fn start_mpris_service() -> Result<(MprisHandle, mpsc::UnboundedReceiv
     // Build the connection
     let bus_name = format!("org.mpris.MediaPlayer2.{}", MPRIS_NAME);
 
+    // zbus defers builder errors (bus address, name, object paths) to build().
     let connection = Builder::session()
-        .map_err(|e| format!("Failed to create session bus builder: {}", e))?
         .name(bus_name.as_str())
-        .map_err(|e| format!("Failed to request bus name: {}", e))?
         .serve_at(MPRIS_OBJECT_PATH, MprisRoot { command_tx: command_tx.clone() })
-        .map_err(|e| format!("Failed to serve MprisRoot: {}", e))?
         .serve_at(MPRIS_OBJECT_PATH, MprisPlayer { command_tx: command_tx.clone(), state_rx: state_rx.clone() })
-        .map_err(|e| format!("Failed to serve MprisPlayer: {}", e))?
         .serve_at(MPRIS_OBJECT_PATH, MprisTrackList { command_tx: command_tx.clone(), state_rx })
-        .map_err(|e| format!("Failed to serve MprisTrackList: {}", e))?
         .build()
         .await
-        .map_err(|e| format!("Failed to build D-Bus connection: {}", e))?;
+        .map_err(|e| format!("Failed to set up the MPRIS D-Bus service: {}", e))?;
 
     info!("MPRIS service registered at {} on session bus", bus_name);
 

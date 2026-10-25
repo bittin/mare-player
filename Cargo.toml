@@ -95,7 +95,7 @@ gstreamer-app = "0.25"
 gstreamer-video = "0.25"
 
 # D-Bus for MPRIS media player interface
-zbus = { version = "6", default-features = false, features = ["tokio"] }
+zbus = { version = "6", default-features = false, features = ["tokio", "service"] }
 
 
 # Image processing for circular album art (only need JPEG/PNG for TIDAL artwork)
