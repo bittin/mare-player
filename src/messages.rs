@@ -293,8 +293,6 @@ pub enum Message {
     ResolvePlaybackDebounced(u64),
     /// Preload URL received for gapless playback
     PreloadUrlReceived(Result<(Track, PlaybackUrl), PlaybackFailure>),
-    /// Gapless transition occurred — the preloaded track started playing
-    GaplessTransition,
     /// Periodic playback tick — updates position, processes engine events,
     /// and hides the volume bar after a timeout.
     PlaybackTick,

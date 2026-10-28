@@ -105,18 +105,18 @@ pub async fn open_in_browser(url: &str) -> Result<(), String> {
 async fn open_uri_via_portal(url: &str) -> Result<(), String> {
     use std::collections::HashMap;
     use zbus::Connection;
-    use zbus::zvariant::Value;
+    use zbus::Variant;
 
     let connection = Connection::session().await.map_err(|e| format!("D-Bus session connection failed: {}", e))?;
 
     // OpenURI(parent_window: s, uri: s, options: a{sv}) → o
-    let _response: zbus::zvariant::OwnedObjectPath = connection
+    let _response: zbus::OwnedObjectPath = connection
         .call_method(
             Some("org.freedesktop.portal.Desktop"),
             "/org/freedesktop/portal/desktop",
             Some("org.freedesktop.portal.OpenURI"),
             "OpenURI",
-            &("", url, HashMap::<&str, Value<'_>>::new()),
+            &("", url, HashMap::<&str, Variant<'_>>::new()),
         )
         .await
         .map_err(|e| format!("Portal OpenURI call failed: {}", e))?

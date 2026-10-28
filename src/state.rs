@@ -460,8 +460,6 @@ pub struct AppModel {
     pub(crate) search_debounce_version: u64,
     /// Audio visualizer state
     pub(crate) visualizer_state: VisualizerState,
-    /// Download/buffering progress (0.0 to 1.0) for the current loading track
-    pub(crate) loading_progress: f32,
     /// Pending seek position (for debouncing slider drags)
     pub(crate) pending_seek: Option<f64>,
     /// Seek debounce version counter
@@ -491,9 +489,9 @@ pub struct AppModel {
     pub(crate) show_volume_popup: bool,
     /// Local play history (most-recently-played tracks, persisted to disk)
     pub(crate) play_history: PlayHistory,
-    /// Virtual-list content for the active track-list view (only visible items are rendered).
-    pub(crate) track_list_content: list::Content<Track>,
-    /// Shared reference to the same tracks, for `PlayTrackList`/`ShufflePlay` messages.
+    /// The tracks of the active track-list view, rendered by
+    /// [`AppModel::track_list`] (only the rows in view are built) and shared
+    /// with `PlayTrackList`/`ShufflePlay` messages.
     pub(crate) track_list_arc: Arc<[Track]>,
     /// Whether the history search/filter bar is visible
     pub(crate) history_filter_visible: bool,
@@ -520,14 +518,12 @@ pub struct AppModel {
 }
 
 impl AppModel {
-    /// Populate the virtual track list used by the currently visible view.
-    ///
-    /// This sets up both the `Content<Track>` (for the iced virtual `List`
-    /// widget) and the `Arc<[Track]>` (for `PlayTrackList` / `ShufflePlay`
-    /// messages). Call when entering a track-list view or when its data changes.
+    /// Set the tracks of the active track-list view. Call when entering a
+    /// track-list view or when its data changes; a new list also resets the
+    /// rows [`FixedHeightList`](crate::views::components::FixedHeightList)
+    /// kept for the previous one.
     pub(crate) fn set_track_list(&mut self, tracks: Vec<Track>) {
-        self.track_list_arc = tracks.clone().into();
-        self.track_list_content = tracks.into_iter().collect();
+        self.track_list_arc = tracks.into();
     }
 }
 

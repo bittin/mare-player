@@ -62,20 +62,21 @@ impl AppModel {
             )
             .spacing(8);
 
-        // Logging section — controls terminal/journal verbosity live. Labels
-        // are technical (Error/Warn/Info/…) and intentionally not localized.
+        // Logging section — controls how much goes to stderr (the journal, for
+        // the panel applet) live. The level names (Error/Warn/Info/…) are
+        // technical and intentionally not localized.
         let current_log_level = self.config.log_level;
         let log_selected_idx = LOG_LEVEL_OPTIONS.iter().position(|l| *l == current_log_level).unwrap_or(2);
 
         let logging_section = widget::Column::new()
-            .push(text("Logging").size(14))
+            .push(text(fl!("logging")).size(14))
             .push(
                 widget::dropdown(LOG_LEVEL_OPTIONS, Some(log_selected_idx), |idx| {
                     Message::SetLogLevel(LOG_LEVEL_OPTIONS.get(idx).copied().unwrap_or(LogLevel::Info))
                 })
                 .width(Length::Fill),
             )
-            .push(text("Console / journal verbosity. Applies immediately.").size(11))
+            .push(text(fl!("logging-description")).size(11))
             .spacing(8);
 
         let account_section: Element<'_, Message> = if let Some(profile) = &user_profile {

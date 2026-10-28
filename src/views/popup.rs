@@ -6,19 +6,16 @@
 //! (dispatching to the appropriate view based on ViewState) and the
 //! now-playing bar when music is playing.
 
-use std::rc::Rc;
-
 use cosmic::Element;
-use cosmic::iced::gradient;
 use cosmic::iced::widget::text::Wrapping;
 #[cfg(feature = "panel-applet")]
 use cosmic::iced::window::Id;
-use cosmic::iced::{Alignment, Background, Border, Color, Length, Radians};
+use cosmic::iced::{Alignment, Length};
 #[cfg(not(feature = "panel-applet"))]
 use cosmic::widget::popover::{Position, popover};
 #[cfg(not(feature = "panel-applet"))]
 use cosmic::widget::vertical_slider;
-use cosmic::widget::{self, button, container, icon, slider, text};
+use cosmic::widget::{self, button, container, icon, text};
 
 use crate::fl;
 use crate::helpers::format_seconds;
@@ -38,59 +35,6 @@ const VIDEO_LOADING_HEIGHT: f32 = 180.0;
 /// How long the video-mode overlay controls stay visible after the last
 /// pointer interaction before fading out.
 const VIDEO_CONTROLS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
-
-/// Build a custom [`cosmic::theme::style::iced::Slider`] class whose handle
-/// fills from the bottom up according to `progress` (0.0 → 1.0), showing
-/// download/buffering progress inside the slider thumb itself.
-///
-/// Everything else (rail colours, sizes, radii) is copied verbatim from the
-/// cosmic `Slider::Standard` implementation so the two states look identical
-/// apart from the fill effect on the handle.
-fn buffering_slider_class(progress: f32) -> cosmic::theme::style::iced::Slider {
-    let style_fn = Rc::new(move |theme: &cosmic::Theme| {
-        let cosmic = theme.cosmic();
-
-        let active_track = cosmic.accent.base;
-        let inactive_track = cosmic.palette.neutral_6;
-
-        let accent: Color = cosmic.accent.base.into();
-        let dim = Color { a: 0.25, ..accent };
-
-        // Gradient fills the handle from bottom (accent) to top (dim).
-        // The transition point moves upward as `progress` increases.
-        // offset 0.0 = top of handle, 1.0 = bottom (angle points upward).
-        let cutoff = (1.0 - progress).clamp(0.0, 1.0);
-        let handle_bg = Background::Gradient(
-            gradient::Linear::new(Radians(std::f32::consts::PI)) // top → bottom
-                .add_stop(0.0, dim)
-                .add_stop(cutoff, dim)
-                .add_stop((cutoff + 0.01).min(1.0), accent)
-                .add_stop(1.0, accent)
-                .into(),
-        );
-
-        slider::Style {
-            rail: slider::Rail {
-                backgrounds: (Background::Color(active_track.into()), Background::Color(inactive_track.into())),
-                border: Border { radius: cosmic.corner_radii.radius_xs.into(), color: Color::TRANSPARENT, width: 0.0 },
-                width: 4.0,
-            },
-            handle: slider::Handle {
-                shape: slider::HandleShape::Rectangle {
-                    height: 20,
-                    width: 20,
-                    border_radius: cosmic.corner_radii.radius_m.into(),
-                },
-                border_color: Color::TRANSPARENT,
-                border_width: 0.0,
-                background: handle_bg,
-            },
-            breakpoint: slider::Breakpoint { color: cosmic.on_bg_color().into() },
-        }
-    });
-
-    cosmic::theme::style::iced::Slider::Custom { active: style_fn.clone(), hovered: style_fn.clone(), dragging: style_fn }
-}
 
 /// Shorten an error string for display in the banner.
 ///
@@ -672,22 +616,8 @@ impl AppModel {
             String::from("-0:00")
         };
 
-        let is_buffering = self.playback_state == PlaybackState::Loading;
-
-        // Use the same slider widget for both states.  During buffering the
-        // handle smoothly pulses between full and dim accent colour so the
-        // user can see that something is happening, while the slider keeps its
-        // exact native size and rail styling.
-        let seek_slider = {
-            let mut s =
-                widget::slider(0.0..=100.0, progress as f32, |val| Message::SeekTo(val as f64)).height(4).width(Length::Fill);
-
-            if is_buffering {
-                s = s.class(buffering_slider_class(self.loading_progress));
-            }
-
-            s
-        };
+        let seek_slider =
+            widget::slider(0.0..=100.0, progress as f32, |val| Message::SeekTo(val as f64)).height(4).width(Length::Fill);
 
         let progress_row = widget::Row::new()
             .push(text(elapsed).size(10))

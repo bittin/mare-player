@@ -85,7 +85,6 @@ impl AppModel {
         self.playback_position = 0.0;
         self.video_resume_target = None;
         self.audio_resume_target = None;
-        self.loading_progress = 0.0;
         self.playback_state = PlaybackState::Loading;
 
         self.playback_resolve_version = self.playback_resolve_version.wrapping_add(1);
@@ -476,10 +475,10 @@ impl AppModel {
     }
 
     /// Advance the queue and now-playing metadata after a gapless transition
-    /// into the preloaded next track. Shared by the symphonia `PreloadConsumed`
-    /// event and the GStreamer `about-to-finish` path. Determines the new index
-    /// per loop mode, updates now-playing/history/session, and stages the
-    /// following track's preload.
+    /// into the preloaded next track, which `handle_playback_tick` observes as
+    /// a new GStreamer stream-start. Determines the new index per loop mode,
+    /// updates now-playing/history/session, and stages the following track's
+    /// preload.
     fn handle_gapless_advance(&mut self) -> Task<cosmic::Action<Message>> {
         use crate::tidal::mpris::LoopStatus;
         let new_index = match self.loop_status {
@@ -759,7 +758,6 @@ impl AppModel {
         self.now_playing = None;
         self.now_playing_quality = None;
         self.playback_position = 0.0;
-        self.loading_progress = 0.0;
         self.audio_resume_target = None;
         self.video_resume_target = None;
         self.current_video_url = None;
@@ -940,7 +938,7 @@ impl AppModel {
     /// `shell.request_redraw()`.
     pub fn handle_playback_tick(&mut self) -> Task<cosmic::Action<Message>> {
         // Video path: position comes from the GStreamer pipeline, and we
-        // advance on EOS the same way the audio engine's TrackEnded does.
+        // advance on EOS, as the audio path below does.
         if self.video_player.is_some() {
             if self.playback_state == PlaybackState::Playing
                 && let Some(video) = &self.video_player
@@ -999,7 +997,7 @@ impl AppModel {
         }
 
         // GStreamer audio path: position comes from the pipeline, and we
-        // advance on EOS the same way the symphonia engine's TrackEnded does.
+        // advance on EOS.
         if self.media_player.is_some() {
             // Drain the bus first so EOS/errors/transitions are observed.
             let errored = self.media_player.as_ref().is_some_and(|mp| mp.poll());
@@ -1225,17 +1223,6 @@ impl AppModel {
             }
         }
         Task::none()
-    }
-
-    /// Handle a gapless transition message from the UI layer.
-    ///
-    /// Most of the real work (queue advancement, metadata update) is done
-    /// inside the `PlayerEvent::PreloadConsumed` arm of `handle_playback_tick`.
-    /// This message exists so other parts of the app can react to the
-    /// transition (e.g. update MPRIS metadata).
-    pub fn handle_gapless_transition(&mut self) -> Task<cosmic::Action<Message>> {
-        tracing::info!("Gapless transition acknowledged");
-        self.update_mpris_state()
     }
 
     // ═══ TIDAL play attribution helpers ════════════════════════════════════
@@ -1471,12 +1458,10 @@ mod resolution_tests {
             let mut app = app();
             app.audio_resume_target = Some(90.0);
             app.playback_position = 90.0;
-            app.loading_progress = 0.5;
             drop(app.handle_playback_url_received(10, Err(failure)));
             assert_eq!(app.playback_state, PlaybackState::Stopped);
             assert_eq!(app.playback_queue_index, 0);
             assert_eq!(app.playback_position, 0.0);
-            assert_eq!(app.loading_progress, 0.0);
             assert!(app.now_playing.is_none());
             assert!(app.now_playing_quality.is_none());
             assert!(app.audio_resume_target.is_none());

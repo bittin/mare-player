@@ -4,7 +4,7 @@
 //! music from the TIDAL service.
 //!
 //! The applet provides library browsing, search, Hi-Res audio playback
-//! (symphonia + PulseAudio), a real-time spectrum visualizer, MPRIS2 media
+//! (GStreamer), a real-time spectrum visualizer, MPRIS2 media
 //! control, and local disk caching — all integrated into the COSMIC panel.
 
 #[cfg(not(feature = "panel-applet"))]
@@ -137,7 +137,7 @@ fn main() -> cosmic::iced::Result {
         // resolution at DEBUG while compiling shaders at startup. Silence it.
         "naga=warn",
         // iced_wgpu logs per-frame texture-atlas allocations at DEBUG, which
-        // floods the always-DEBUG file log (multi-GB per session). Silence it.
+        // would flood the journal (gigabytes per session). Silence it.
         "iced_wgpu=warn",
         // turso (embedded DB) logs every page/WAL/btree access at DEBUG, which
         // buries the app's own logs whenever the console level is DEBUG/TRACE.

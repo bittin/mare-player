@@ -122,6 +122,8 @@ account = Conta
 about = Sobre
 version = Versão
 explicit = Explícito
+logging = Registro
+logging-description = Quanto o Maré grava no diário do sistema. Aplica-se imediatamente.
 
 # Histórico
 clear-history = Limpar Histórico

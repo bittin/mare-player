@@ -3,9 +3,9 @@
 //! Play history view for Maré Player.
 //!
 //! This module renders the locally-tracked "Recently Played" track list
-//! using iced's virtual [`List`](cosmic::iced::widget::list::List) widget, which only materialises the rows
-//! currently visible in the viewport.  The underlying data lives in
-//! [`AppModel::track_list_content`] and is kept in sync by the handler
+//! with [`AppModel::track_list`], which only builds the rows currently
+//! visible in the viewport.  The underlying data lives in
+//! [`AppModel::track_list_arc`] and is kept in sync by the handler
 //! helpers (`rebuild_history_track_list`, `set_track_list`).
 //!
 //! A toggleable search bar filters the history client-side by matching
@@ -21,16 +21,13 @@ use cosmic::widget::{self, button, text};
 use crate::fl;
 use crate::messages::Message;
 use crate::state::AppModel;
-use crate::views::components::rows::build_track_row;
-use crate::views::components::{TrackRowOptions, back_button, scrollable_element, virtual_list_row};
+use crate::views::components::{TrackRowOptions, back_button, scrollable_element};
 
 impl AppModel {
     /// Render the play history list view.
     ///
-    /// Track rows are rendered through a virtual `List` — only the rows
-    /// visible in the scroll viewport are materialised, eliminating the
-    /// O(N) widget-tree and layout cost that the old `Column`-based
-    /// approach incurred for every frame.
+    /// Track rows are rendered through [`AppModel::track_list`]: only the
+    /// rows visible in the scroll viewport are built.
     pub fn view_history(&self) -> Element<'_, Message> {
         // --- header row ---
         let header = widget::Row::new()
@@ -46,7 +43,7 @@ impl AppModel {
             .push(
                 button::icon(widget::icon::from_name("media-playlist-shuffle-symbolic"))
                     .tooltip(fl!("tooltip-shuffle-play"))
-                    .on_press_maybe(if self.track_list_content.is_empty() {
+                    .on_press_maybe(if self.track_list_arc.is_empty() {
                         None
                     } else {
                         Some(Message::ShufflePlay(
@@ -78,7 +75,7 @@ impl AppModel {
         }
 
         // --- track list (virtual — only visible rows are built) ---
-        let content: Element<'_, Message> = if self.track_list_content.is_empty() {
+        let content: Element<'_, Message> = if self.track_list_arc.is_empty() {
             if self.play_history.is_empty() {
                 text(fl!("no-history")).size(14).into()
             } else {
@@ -86,7 +83,6 @@ impl AppModel {
                 text(fl!("no-results")).size(14).into()
             }
         } else {
-            let loaded_images = &self.loaded_images;
             let opts = TrackRowOptions {
                 tracks: Arc::clone(&self.track_list_arc),
                 source: Some(crate::tidal::models::PlaybackSource::ad_hoc(fl!("context-history"))),
@@ -94,9 +90,7 @@ impl AppModel {
                 ..self.track_row_options()
             };
 
-            let track_list = cosmic::iced::widget::list::List::new(&self.track_list_content, move |index, track| {
-                virtual_list_row(build_track_row(loaded_images, track, index, &opts), 2)
-            });
+            let track_list = self.track_list(opts);
 
             scrollable_element(track_list)
         };

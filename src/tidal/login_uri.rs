@@ -62,15 +62,13 @@ impl LoginCallback {
 pub async fn start_login_uri_service() -> Result<mpsc::UnboundedReceiver<String>, String> {
     let (uri_tx, uri_rx) = mpsc::unbounded_channel();
 
+    // zbus defers builder errors (bus address, name, object path) to build().
     let connection = Builder::session()
-        .map_err(|e| format!("Failed to create session bus builder: {e}"))?
         .name(BUS_NAME)
-        .map_err(|e| format!("Failed to request bus name: {e}"))?
         .serve_at(OBJECT_PATH, LoginCallback { uri_tx })
-        .map_err(|e| format!("Failed to serve LoginCallback: {e}"))?
         .build()
         .await
-        .map_err(|e| format!("Failed to build D-Bus connection: {e}"))?;
+        .map_err(|e| format!("Failed to set up the login D-Bus service: {e}"))?;
 
     // The bus name is held for as long as the connection lives, and this
     // service is wanted for the life of the process.

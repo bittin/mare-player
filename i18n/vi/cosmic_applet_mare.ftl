@@ -116,6 +116,8 @@ account = Tài khoản
 about = Giới thiệu
 version = Phiên bản
 explicit = Nhạy cảm
+logging = Ghi nhật ký
+logging-description = Lượng thông tin Maré ghi vào nhật ký hệ thống. Áp dụng ngay.
 
 # Lịch sử
 clear-history = Xóa lịch sử

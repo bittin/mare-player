@@ -116,6 +116,8 @@ account = บัญชี
 about = เกี่ยวกับ
 version = เวอร์ชัน
 explicit = เนื้อหาไม่เหมาะสม
+logging = การบันทึก
+logging-description = ปริมาณที่ Maré เขียนลงในบันทึกของระบบ มีผลทันที
 
 # ประวัติ
 clear-history = ล้างประวัติ

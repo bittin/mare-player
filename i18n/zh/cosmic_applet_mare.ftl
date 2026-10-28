@@ -116,6 +116,8 @@ account = 账户
 about = 关于
 version = 版本
 explicit = 显式内容
+logging = 日志
+logging-description = Maré 写入系统日志的详细程度。立即生效。
 
 # 历史记录
 clear-history = 清除历史记录

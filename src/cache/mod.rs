@@ -12,9 +12,8 @@
 //!   track id, ordered by play time); the only *non-disposable* table, since
 //!   TIDAL exposes no "recently played" endpoint to rebuild it from.
 //!
-//! Songs are deliberately **not** stored here — large audio stays on the
-//! filesystem so it can be streamed and seeked while still downloading. Videos
-//! are never cached at all.
+//! Songs and videos are deliberately **not** stored here: GStreamer streams
+//! them straight from TIDAL, and nothing is written to disk for playback.
 //!
 //! ## Concurrency
 //!

@@ -122,6 +122,8 @@ account = Konto
 about = Über
 version = Version
 explicit = Explizit
+logging = Protokollierung
+logging-description = Wie viel Maré ins Systemjournal schreibt. Gilt sofort.
 
 # Verlauf
 clear-history = Verlauf löschen

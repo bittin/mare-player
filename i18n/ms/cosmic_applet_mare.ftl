@@ -116,6 +116,8 @@ account = Akaun
 about = Perihal
 version = Versi
 explicit = Eksplisit
+logging = Pengelogan
+logging-description = Berapa banyak Maré menulis ke jurnal sistem. Berkuat kuasa serta-merta.
 
 # Sejarah
 clear-history = Kosongkan Sejarah

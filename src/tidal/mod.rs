@@ -7,7 +7,6 @@
 //! - Secure credential storage via the system keyring
 //! - Session persistence for long-lived authentication
 //! - API methods for playlists, albums, tracks, and search
-//! - Audio playback via symphonia + PulseAudio
 
 pub mod auth;
 pub mod client;

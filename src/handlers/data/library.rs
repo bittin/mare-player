@@ -1142,7 +1142,7 @@ mod track_radio_tests {
         assert!(!app.track_radio_loading);
         assert!(app.error_message.is_none());
         assert!(app.selected_radio_tracks.is_empty());
-        assert!(app.track_list_content.is_empty());
+        assert!(app.track_list_arc.is_empty());
         assert!(app.selected_radio_mix_id.is_none());
         assert!(app.unavailable_radio_tracks.contains("missing"));
         assert!(!app.unavailable_radio_tracks.contains("other"));
@@ -1188,7 +1188,7 @@ mod track_radio_tests {
         assert!(!app.track_radio_loading);
         assert_eq!(app.selected_radio_mix_id.as_deref(), Some("mix-id"));
         assert_eq!(app.selected_radio_tracks[0].id, "recommended");
-        assert_eq!(app.track_list_content.len(), 1);
+        assert_eq!(app.track_list_arc.len(), 1);
         assert!(app.error_message.is_none());
         assert!(app.unavailable_radio_tracks.is_empty());
     }
@@ -1214,7 +1214,7 @@ mod track_radio_tests {
         app.is_loading = true;
         drop(app.handle_track_radio_loaded(version, "missing".into(), Ok(None)));
         assert_eq!(app.view_state, ViewState::History);
-        assert_eq!(app.track_list_content.get(0).unwrap().id, "history");
+        assert_eq!(app.track_list_arc[0].id, "history");
         assert!(app.is_loading);
         assert!(!app.track_radio_loading);
         assert!(app.unavailable_radio_tracks.contains("missing"));
@@ -1236,11 +1236,11 @@ mod track_radio_tests {
                 drop(app.handle_navigate_back());
                 assert_eq!(app.view_state, parent);
                 assert!(!app.is_loading);
-                assert_eq!(app.track_list_content.get(0).unwrap().id, "parent");
+                assert_eq!(app.track_list_arc[0].id, "parent");
                 drop(app.handle_track_radio_loaded(version, "seed".into(), result));
                 assert!(!app.track_radio_loading);
                 assert!(!app.is_loading);
-                assert_eq!(app.track_list_content.get(0).unwrap().id, "parent");
+                assert_eq!(app.track_list_arc[0].id, "parent");
                 assert!(app.error_message.is_none());
             }
         }

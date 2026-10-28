@@ -130,6 +130,8 @@ account = الحساب
 about = حول
 version = الإصدار
 explicit = محتوى صريح
+logging = السجلات
+logging-description = مقدار ما يكتبه Maré في سجل النظام. يُطبَّق فورًا.
 
 # History
 clear-history = مسح السجل

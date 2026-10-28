@@ -116,6 +116,8 @@ account = Hesap
 about = Hakkında
 version = Sürüm
 explicit = Müstehcen
+logging = Günlükleme
+logging-description = Maré’nin sistem günlüğüne ne kadar yazdığı. Hemen uygulanır.
 
 # Geçmiş
 clear-history = Geçmişi Temizle

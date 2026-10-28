@@ -7,16 +7,13 @@
 //! Also handles mouse wheel for volume control with a visual volume bar overlay.
 
 use cosmic::Element;
-use cosmic::iced::gradient;
-
 use cosmic::iced::widget::text::Wrapping;
-use cosmic::iced::{Alignment, Background, Border, Color, Length, Radians};
+use cosmic::iced::{Alignment, Background, Border, Length};
 use cosmic::widget::button::Catalog;
 use cosmic::widget::{self, autosize, button, container};
 
 use crate::messages::Message;
 use crate::state::AppModel;
-use crate::tidal::player::PlaybackState;
 use crate::views::components::{PANEL_ART_SIZE, VOLUME_BAR_WIDTH};
 
 /// Static ID for the autosize widget
@@ -31,7 +28,7 @@ impl AppModel {
     pub fn view_panel(&self) -> Element<'_, Message> {
         if let Some(np) = &self.now_playing {
             // Build the album art thumbnail (small, fits panel)
-            let base_art: Element<'_, Message> = if let Some(url) = &np.cover_url {
+            let album_art: Element<'_, Message> = if let Some(url) = &np.cover_url {
                 if let Some(handle) = self.loaded_images.get(url) {
                     cosmic::widget::image(handle.clone()).width(PANEL_ART_SIZE).height(PANEL_ART_SIZE).into()
                 } else {
@@ -39,44 +36,6 @@ impl AppModel {
                 }
             } else {
                 widget::icon::from_name("media-optical-symbolic").size(PANEL_ART_SIZE).into()
-            };
-
-            // During loading, overlay an opaque mask that shrinks downward,
-            // progressively revealing the album art pixels from the bottom up.
-            let album_art: Element<'_, Message> = if self.playback_state == PlaybackState::Loading {
-                let progress = self.loading_progress;
-                let size = PANEL_ART_SIZE;
-                let radius = f32::from(size) / 2.0;
-
-                // Mask: opaque bg at top (hides art), transparent at bottom (reveals art).
-                // As progress goes 0→1 the cutoff rises, uncovering more image.
-                let mask = container(widget::Space::new().width(Length::Fixed(size.into())).height(Length::Fixed(size.into())))
-                    .class(cosmic::theme::Container::custom(move |theme| {
-                        let cosmic = theme.cosmic();
-                        let solid: Color = cosmic.bg_color().into();
-                        let clear = Color { a: 0.0, ..solid };
-
-                        // cutoff 1.0 = everything masked; 0.0 = fully revealed
-                        let cutoff = (1.0 - progress).clamp(0.0, 1.0);
-                        let bg = Background::Gradient(
-                            gradient::Linear::new(Radians(std::f32::consts::PI)) // top→bottom
-                                .add_stop(0.0, solid)
-                                .add_stop(cutoff, solid)
-                                .add_stop((cutoff + 0.01).min(1.0), clear)
-                                .add_stop(1.0, clear)
-                                .into(),
-                        );
-
-                        container::Style {
-                            background: Some(bg),
-                            border: Border { radius: radius.into(), ..Default::default() },
-                            ..Default::default()
-                        }
-                    }));
-
-                cosmic::iced::widget::Stack::new().push(base_art).push(mask).into()
-            } else {
-                base_art
             };
 
             // Format: "Title · Artist · Album" (or "Title · Artist" if no album)
