@@ -66,7 +66,6 @@ albums = 专辑
 artists = 艺术家
 playlists = 播放列表
 videos = 视频
-profiles = 个人资料
 tracks = 曲目
 favorite-tracks = 收藏曲目
 
@@ -96,6 +95,7 @@ fallback-playlist = 播放列表
 released = 发行时间：{$year}
 quality-label = 音质：{$quality}
 track-count = {$count} 首曲目
+video-count = {$count} 个视频
 artist-count = {$count} 位艺术家
 
 # 搜索
@@ -123,11 +123,35 @@ logging-description = Maré 写入系统日志的详细程度。立即生效。
 clear-history = 清除历史记录
 history-filter-placeholder = 筛选历史记录…
 favorite-tracks-filter-placeholder = 筛选收藏曲目…
+sort-name = 名称
+sort-date-added = 添加日期
+sort-last-updated = 最近更新
+
+# Changing playlists
+add-to-playlist = 添加到播放列表
+new-playlist = 新建播放列表
+playlist-name = 播放列表名称
+playlist-private = 私密
+playlist-public = 公开
+create-playlist = 创建
+added-to-playlist = 已添加到 { $playlist }
+already-in-playlist = 已在 { $playlist } 中
+delete-playlist = 删除播放列表
+delete-playlist-confirm = 要删除“{ $playlist }”吗？此操作无法撤销。
+delete = 删除
+deleted-playlist = 已删除 { $playlist }
+
+# Updates
+update-available = Maré Player { $version } 已发布
+update-whats-new = 新功能
+check-for-updates = 检查更新
+check-for-updates-description = 每次运行时向 GitHub 询问一次是否有新版本。
 
 # 工具提示
 tooltip-search = 搜索
 tooltip-settings = 设置
 tooltip-shuffle-play = 随机播放
+tooltip-reverse-order = 反转顺序
 tooltip-refresh = 刷新
 tooltip-previous-track = 上一首
 tooltip-next-track = 下一首

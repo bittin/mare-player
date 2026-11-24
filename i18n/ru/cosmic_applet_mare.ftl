@@ -66,7 +66,6 @@ albums = Альбомы
 artists = Исполнители
 playlists = Плейлисты
 videos = Видео
-profiles = Профили
 tracks = Треки
 favorite-tracks = Избранные треки
 
@@ -101,6 +100,7 @@ track-count = {$count} {$count ->
     [many] треков
    *[other] треков
 }
+video-count = {$count} видео
 artist-count = {$count} {$count ->
     [one] исполнитель
     [few] исполнителя
@@ -133,11 +133,35 @@ logging-description = Сколько Maré записывает в систем�
 clear-history = Очистить историю
 history-filter-placeholder = Фильтр истории…
 favorite-tracks-filter-placeholder = Фильтр избранных треков…
+sort-name = А–Я
+sort-date-added = Дата добавления
+sort-last-updated = Последнее обновление
+
+# Changing playlists
+add-to-playlist = Добавить в плейлист
+new-playlist = Новый плейлист
+playlist-name = Название плейлиста
+playlist-private = Личный
+playlist-public = Публичный
+create-playlist = Создать
+added-to-playlist = Добавлено в { $playlist }
+already-in-playlist = Уже в { $playlist }
+delete-playlist = Удалить плейлист
+delete-playlist-confirm = Удалить «{ $playlist }»? Это действие нельзя отменить.
+delete = Удалить
+deleted-playlist = Плейлист { $playlist } удалён
+
+# Updates
+update-available = Доступен Maré Player { $version }
+update-whats-new = Что нового
+check-for-updates = Проверять обновления
+check-for-updates-description = Раз за запуск спрашивает GitHub, вышла ли новая версия.
 
 # Подсказки
 tooltip-search = Поиск
 tooltip-settings = Настройки
 tooltip-shuffle-play = Случайное воспроизведение
+tooltip-reverse-order = Обратный порядок
 tooltip-refresh = Обновить
 tooltip-previous-track = Предыдущий трек
 tooltip-next-track = Следующий трек

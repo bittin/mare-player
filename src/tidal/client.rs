@@ -29,10 +29,10 @@ use tidlers::client::models::events::PlaybackSession;
 use tidlers::client::models::home::{HomeItem, HomeListItem, HomeMixData, HomeShortcutItem};
 use tidlers::client::models::page::{PageModule, PageResponse};
 use tidlers::client::models::playback::{AssetPresentation, PlaybackMode, VideoQuality};
-use tidlers::client::models::playlist::{PlaylistItemsResponse, PlaylistMedia};
+use tidlers::client::models::playlist::{PlaylistItemsResponse, PlaylistMedia, PlaylistResponse};
 use tidlers::client::models::track::config::TrackPlaybackInfoConfig;
 use tidlers::client::models::video::config::VideoPlaybackInfoConfig;
-use tidlers::{TidalClient, auth::TidalAuth, client::models::collection::favorites::FavoriteResourceType};
+use tidlers::{TidalClient, auth::TidalAuth, client::models::ResourceType};
 use tokio::sync::Mutex;
 use tracing::{debug, error, info, warn};
 
@@ -167,11 +167,44 @@ struct ApiPaginatedResponse<T> {
 impl From<CollectionFavoriteTracksResponse> for ApiPaginatedResponse<Track> {
     fn from(page: CollectionFavoriteTracksResponse) -> Self {
         Self {
-            items: page.items.into_iter().map(|entry| Track::from(entry.item)).collect(),
+            items: page
+                .items
+                .into_iter()
+                .map(|entry| Track { added_at: favorite_added_at(&entry.created), ..Track::from(entry.item) })
+                .collect(),
             offset: page.offset,
             total_number_of_items: page.total_number_of_items,
         }
     }
+}
+
+/// Where `item` goes to land at the end of a playlist holding `entries`, or
+/// `None` if it is already there. Track and video ids are separate, so both
+/// the id and the kind must match.
+fn append_position(entries: &[Track], item: &Track) -> Option<u64> {
+    let present = entries.iter().any(|entry| entry.id == item.id && entry.is_video == item.is_video);
+    (!present).then_some(entries.len() as u64)
+}
+
+/// A followed artist, stamped with when the user followed it.
+fn followed_artist(entry: tidlers::client::models::collection::artist::CollectionArtistEntry) -> Artist {
+    Artist { added_at: favorite_added_at(&entry.added_at), ..Artist::from(entry.data) }
+}
+
+/// One of the user's own playlists, dated by when it was created.
+fn user_playlist(playlist: PlaylistResponse) -> Playlist {
+    let added_at = favorite_added_at(&playlist.created);
+    Playlist { added_at, ..Playlist::from(playlist) }
+}
+
+/// When something joined the user's collection, as Unix milliseconds, from a
+/// TIDAL timestamp: RFC 3339 (`2026-01-01T00:00:00Z`) or with a colon-less offset
+/// (`2024-03-01T12:34:56.789+0000`). `None` if it's neither.
+fn favorite_added_at(created: &str) -> Option<i64> {
+    chrono::DateTime::parse_from_rfc3339(created)
+        .or_else(|_| chrono::DateTime::parse_from_str(created, "%Y-%m-%dT%H:%M:%S%.f%z"))
+        .map(|at| at.timestamp_millis())
+        .ok()
 }
 
 impl From<PlaylistItemsResponse> for ApiPaginatedResponse<Track> {
@@ -195,7 +228,11 @@ impl From<PlaylistItemsResponse> for ApiPaginatedResponse<Track> {
 impl From<CollectionFavoriteAlbumsResponse> for ApiPaginatedResponse<Album> {
     fn from(page: CollectionFavoriteAlbumsResponse) -> Self {
         Self {
-            items: page.items.into_iter().map(|entry| Album::from(entry.item)).collect(),
+            items: page
+                .items
+                .into_iter()
+                .map(|entry| Album { added_at: favorite_added_at(&entry.created), ..Album::from(entry.item) })
+                .collect(),
             offset: page.offset,
             total_number_of_items: page.total_number_of_items,
         }
@@ -434,7 +471,7 @@ impl TidalAppClient {
     // boilerplate that was previously copy-pasted into every method.
 
     /// Add `resource_id` to the user's favorites via tidlers.
-    async fn add_to_favorites(&self, resource: FavoriteResourceType, resource_id: &str) -> TidalResult<()> {
+    async fn add_to_favorites(&self, resource: ResourceType, resource_id: &str) -> TidalResult<()> {
         self.ensure_valid_token().await?;
         let client_guard = self.client.lock().await;
         let client = client_guard.as_ref().ok_or(TidalError::NotAuthenticated)?;
@@ -442,7 +479,7 @@ impl TidalAppClient {
     }
 
     /// Remove `resource_id` from the user's favorites via tidlers.
-    async fn remove_from_favorites(&self, resource: FavoriteResourceType, resource_id: &str) -> TidalResult<()> {
+    async fn remove_from_favorites(&self, resource: ResourceType, resource_id: &str) -> TidalResult<()> {
         self.ensure_valid_token().await?;
         let client_guard = self.client.lock().await;
         let client = client_guard.as_ref().ok_or(TidalError::NotAuthenticated)?;
@@ -970,6 +1007,7 @@ impl TidalAppClient {
                                 explicit: v.explicit,
                                 audio_quality: None,
                                 is_video: true,
+                                added_at: None,
                             }
                         })
                         .collect();
@@ -995,7 +1033,7 @@ impl TidalAppClient {
 
         match client.list_playlists().await {
             Ok(response) => {
-                let playlists: Vec<Playlist> = response.items.into_iter().map(Playlist::from).collect();
+                let playlists: Vec<Playlist> = response.items.into_iter().map(user_playlist).collect();
                 Ok(playlists)
             }
             Err(e) => {
@@ -1003,6 +1041,54 @@ impl TidalAppClient {
                 Err(TidalError::RequestFailed(format!("{:?}", e)))
             }
         }
+    }
+
+    /// Create an empty playlist for the user, private unless `public`.
+    /// Returns its UUID.
+    pub async fn create_playlist(&self, title: &str, public: bool) -> TidalResult<String> {
+        use tidlers::client::models::collection::SharingLevel;
+        self.ensure_valid_token().await?;
+        let client_guard = self.client.lock().await;
+        let client = client_guard.as_ref().ok_or(TidalError::NotAuthenticated)?;
+        debug!("Creating playlist (public: {public})");
+        let sharing = if public { SharingLevel::Public } else { SharingLevel::Private };
+        let entry = client
+            .create_playlist(title, "", Some(sharing), None)
+            .await
+            .map_err(|e| Self::request_error("Create playlist", e))?;
+        info!("Created playlist {}", entry.data.uuid);
+        Ok(entry.data.uuid)
+    }
+
+    /// Delete one of the user's own playlists.
+    pub async fn delete_playlist(&self, uuid: &str) -> TidalResult<()> {
+        self.ensure_valid_token().await?;
+        let client_guard = self.client.lock().await;
+        let client = client_guard.as_ref().ok_or(TidalError::NotAuthenticated)?;
+        client.delete_playlist(uuid).await.map_err(|e| Self::request_error("Delete playlist", e))?;
+        info!("Deleted playlist {}", uuid);
+        Ok(())
+    }
+
+    /// Add `item` (a track or a video) to the end of one of the user's
+    /// playlists, unless it is already there. Returns whether it was added.
+    ///
+    /// tidlers can't ask TIDAL to skip duplicates (`onDupes`), so this reads
+    /// the playlist first.
+    pub async fn add_to_playlist(&self, playlist_uuid: &str, item: &Track) -> TidalResult<bool> {
+        let entries = self.get_playlist_tracks(playlist_uuid, None, None).await?;
+        let Some(end) = append_position(&entries, item) else {
+            info!("{} is already in playlist {}", item.id, playlist_uuid);
+            return Ok(false);
+        };
+        let client_guard = self.client.lock().await;
+        let client = client_guard.as_ref().ok_or(TidalError::NotAuthenticated)?;
+        client
+            .add_items_to_playlist(playlist_uuid, vec![item.id.clone()], Some(end))
+            .await
+            .map_err(|e| Self::request_error("Add to playlist", e))?;
+        info!("Added {} to playlist {}", item.id, playlist_uuid);
+        Ok(true)
     }
 
     /// Get all favourite tracks through tidlers, preserving their server order.
@@ -1255,13 +1341,13 @@ impl TidalAppClient {
     /// Add a track to user's favorites
     pub async fn add_favorite_track(&self, track_id: &str) -> TidalResult<()> {
         debug!("Adding track {} to favorites", track_id);
-        self.add_to_favorites(FavoriteResourceType::Tracks, track_id).await
+        self.add_to_favorites(ResourceType::Tracks, track_id).await
     }
 
     /// Remove a track from user's favorites
     pub async fn remove_favorite_track(&self, track_id: &str) -> TidalResult<()> {
         debug!("Removing track {} from favorites", track_id);
-        self.remove_from_favorites(FavoriteResourceType::Tracks, track_id).await
+        self.remove_from_favorites(ResourceType::Tracks, track_id).await
     }
 
     // =========================================================================
@@ -1385,6 +1471,7 @@ impl TidalAppClient {
                         explicit: v.explicit,
                         audio_quality: None,
                         is_video: true,
+                        added_at: None,
                     })
                     .collect();
                 Ok(videos)
@@ -1601,13 +1688,13 @@ impl TidalAppClient {
     /// Add an album to user's favorites
     pub async fn add_favorite_album(&self, album_id: &str) -> TidalResult<()> {
         debug!("Adding album {} to favorites", album_id);
-        self.add_to_favorites(FavoriteResourceType::Albums, album_id).await
+        self.add_to_favorites(ResourceType::Albums, album_id).await
     }
 
     /// Remove an album from user's favorites
     pub async fn remove_favorite_album(&self, album_id: &str) -> TidalResult<()> {
         debug!("Removing album {} from favorites", album_id);
-        self.remove_from_favorites(FavoriteResourceType::Albums, album_id).await
+        self.remove_from_favorites(ResourceType::Albums, album_id).await
     }
     /// Fetch the user's subscription plan.
     ///
@@ -2103,6 +2190,7 @@ impl TidalAppClient {
                 .map(|tags| tags.iter().filter_map(|t| t.as_str().map(str::to_string)).collect())
                 .unwrap_or_default(),
             review: None,
+            added_at: None,
         })
     }
 
@@ -2115,10 +2203,13 @@ impl TidalAppClient {
             description: it.get("description").and_then(|v| v.as_str()).map(|s| s.to_string()),
             creator_name: None,
             num_tracks: it.get("numberOfTracks").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
+            num_videos: it.get("numberOfVideos").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
             duration: it.get("duration").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
             last_updated: None,
             image_url: image_id.map(tidal_cover_url),
             is_user_playlist: false,
+            added_at: None,
+            public: None,
         })
     }
 
@@ -2132,6 +2223,7 @@ impl TidalAppClient {
             popularity: None,
             roles: Vec::new(),
             url: None,
+            added_at: None,
         })
     }
 
@@ -2294,7 +2386,7 @@ impl TidalAppClient {
             let client_guard = self.client.lock().await;
             let client = client_guard.as_ref().ok_or(tidlers::error::TidalError::NotAuthenticated)?;
             let page = client.get_collection_artists(50, cursor).await?;
-            Ok((page.items.into_iter().map(|entry| Artist::from(entry.data)).collect(), page.cursor))
+            Ok((page.items.into_iter().map(followed_artist).collect(), page.cursor))
         })
         .await?;
         info!("Loaded {} followed artists", artists.len());
@@ -2306,7 +2398,7 @@ impl TidalAppClient {
     /// Uses the TIDAL v1 API endpoint `PUT /v1/users/{userId}/favorites/artists`.
     pub async fn follow_artist(&self, artist_id: &str) -> TidalResult<()> {
         debug!("Following artist {}", artist_id);
-        self.add_to_favorites(FavoriteResourceType::Artists, artist_id).await
+        self.add_to_favorites(ResourceType::Artists, artist_id).await
     }
 
     /// Unfollow (remove from favorites) an artist by ID.
@@ -2314,7 +2406,7 @@ impl TidalAppClient {
     /// Uses the TIDAL v1 API endpoint `DELETE /v1/users/{userId}/favorites/artists/{artistId}`.
     pub async fn unfollow_artist(&self, artist_id: &str) -> TidalResult<()> {
         debug!("Unfollowing artist {}", artist_id);
-        self.remove_from_favorites(FavoriteResourceType::Artists, artist_id).await
+        self.remove_from_favorites(ResourceType::Artists, artist_id).await
     }
 
     /// Fetch the user's feed (new releases from followed artists).
@@ -2353,6 +2445,7 @@ impl TidalAppClient {
                 audio_quality: album.audio_quality,
                 quality_tags: Vec::new(),
                 review: None,
+                added_at: None,
             }),
             TItem::HistoryMix(mix) => {
                 FeedItem::HistoryMix { id: mix.id, title: mix.title, subtitle: mix.subtitle, image_url: mix.image_url }
@@ -2537,6 +2630,8 @@ mod tests {
             assert_eq!(album.num_tracks, 12);
             assert_eq!(album.duration, 3600);
             assert_eq!(album.release_date.as_deref(), Some("2026-01-01"));
+            // `created` (2026-01-01T00:00:00Z) is kept as Unix milliseconds.
+            assert_eq!(album.added_at, Some(1_767_225_600_000));
             assert_eq!(album.cover_url.as_deref(), Some("https://resources.tidal.com/images/aa/bb/320x320.jpg"));
             assert!(album.explicit);
             assert_eq!(album.audio_quality.as_deref(), Some("LOSSLESS"));
@@ -2672,6 +2767,50 @@ mod tests {
             assert!(track.explicit);
             assert_eq!(track.audio_quality.as_deref(), Some("LOSSLESS"));
             assert!(!track.is_video);
+            // `created` (2026-01-01T00:00:00Z) is kept as Unix milliseconds.
+            assert_eq!(track.added_at, Some(1_767_225_600_000));
+        }
+
+        #[test]
+        fn added_dates_parse_in_both_of_tidals_formats() {
+            use super::super::favorite_added_at;
+            assert_eq!(favorite_added_at("2026-01-01T00:00:00Z"), Some(1_767_225_600_000));
+            assert_eq!(favorite_added_at("2026-01-01T00:00:00.250+0000"), Some(1_767_225_600_250));
+            assert_eq!(favorite_added_at("2026-01-01T01:00:00+0100"), Some(1_767_225_600_000));
+            assert_eq!(favorite_added_at("yesterday"), None);
+        }
+
+        #[test]
+        fn an_item_is_appended_once() {
+            use super::super::{Track, append_position};
+            let entry = |id: &str, is_video| Track { id: id.into(), is_video, ..Default::default() };
+            let entries = [entry("1", false), entry("2", false), entry("3", true)];
+            assert_eq!(append_position(&entries, &entry("4", false)), Some(3));
+            assert_eq!(append_position(&entries, &entry("2", false)), None);
+            // A video with a track's id, or the other way round, is another item.
+            assert_eq!(append_position(&entries, &entry("2", true)), Some(3));
+            assert_eq!(append_position(&entries, &entry("3", true)), None);
+            assert_eq!(append_position(&[], &entry("1", false)), Some(0));
+        }
+
+        #[test]
+        fn a_users_playlist_is_dated_by_its_creation() {
+            let response: tidlers::client::models::playlist::PlaylistResponse = serde_json::from_value(serde_json::json!({
+                "uuid": "pl-1", "title": "Road Trip", "numberOfTracks": 3, "numberOfVideos": 0,
+                "creator": {"id": 42}, "description": "", "duration": 600,
+                "lastUpdated": "2026-02-01T00:00:00.000+0000", "created": "2026-01-01T00:00:00.000+0000",
+                "type": "USER", "publicPlaylist": false, "url": "http://www.tidal.com/playlist/pl-1",
+                "image": "aa-bb", "popularity": 0, "squareImage": "cc-dd", "customImageUrl": null,
+                "promotedArtists": [], "lastItemAddedAt": null
+            }))
+            .expect("tidlers playlist fixture should deserialize");
+            let playlist = super::super::user_playlist(response);
+            assert_eq!(playlist.title, "Road Trip");
+            assert!(playlist.is_user_playlist);
+            assert_eq!(playlist.added_at, Some(1_767_225_600_000));
+            assert_eq!(playlist.public, Some(false));
+            assert_eq!((playlist.num_tracks, playlist.num_videos), (3, 0));
+            assert_eq!(playlist.image_url.as_deref(), Some("https://resources.tidal.com/images/cc/dd/320x320.jpg"));
         }
 
         #[tokio::test]
@@ -2790,7 +2929,7 @@ mod tests {
     }
 
     mod followed_artists {
-        use super::super::{Artist, TidalAppClient};
+        use super::super::{Artist, TidalAppClient, followed_artist};
         use std::future::ready;
         use tidlers::client::models::collection::artist::CollectionArtistsResponse;
 
@@ -2829,7 +2968,7 @@ mod tests {
 
         fn page(ids: std::ops::Range<i64>, cursor: Option<&str>) -> Result<Page, tidlers::error::TidalError> {
             let page = tidlers_page(ids, cursor);
-            Ok((page.items.into_iter().map(|entry| Artist::from(entry.data)).collect(), page.cursor))
+            Ok((page.items.into_iter().map(followed_artist).collect(), page.cursor))
         }
 
         #[tokio::test]
@@ -2855,6 +2994,7 @@ mod tests {
             assert_eq!(artist.popularity, Some(42));
             assert_eq!(artist.roles, ["Artist", "Producer"]);
             assert_eq!(artist.url.as_deref(), Some("http://www.tidal.com/artist/0"));
+            assert_eq!(artist.added_at, Some(1_767_225_600_000));
             assert_eq!(artists[2].picture_url, None);
         }
 

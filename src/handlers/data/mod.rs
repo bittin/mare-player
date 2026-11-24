@@ -7,9 +7,11 @@
 //! - `library` - Playlists, albums, mixes, profiles, artist/album/track detail
 //! - `search` - Search query debouncing and result handling
 //! - `favorites` - Favorite track/album toggle and follow/unfollow artist
+//! - `playlists` - Adding to, creating, and deleting the user's playlists
 //! - `thumbnails` - 2×2 playlist grid thumbnail generation
 
 pub mod favorites;
 pub mod library;
+pub mod playlists;
 pub mod search;
 pub mod thumbnails;

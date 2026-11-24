@@ -66,7 +66,6 @@ albums = Album
 artists = Nghệ sĩ
 playlists = Danh sách phát
 videos = Video
-profiles = Hồ sơ
 tracks = Bài hát
 favorite-tracks = Bài hát yêu thích
 
@@ -96,6 +95,7 @@ fallback-playlist = Danh sách phát
 released = Phát hành: {$year}
 quality-label = Chất lượng: {$quality}
 track-count = {$count} bài hát
+video-count = {$count} video
 artist-count = {$count} nghệ sĩ
 
 # Tìm kiếm
@@ -123,11 +123,35 @@ logging-description = Lượng thông tin Maré ghi vào nhật ký hệ thống
 clear-history = Xóa lịch sử
 history-filter-placeholder = Lọc lịch sử…
 favorite-tracks-filter-placeholder = Lọc bài hát yêu thích…
+sort-name = A–Z
+sort-date-added = Ngày thêm
+sort-last-updated = Cập nhật lần cuối
+
+# Changing playlists
+add-to-playlist = Thêm vào danh sách phát
+new-playlist = Danh sách phát mới
+playlist-name = Tên danh sách phát
+playlist-private = Riêng tư
+playlist-public = Công khai
+create-playlist = Tạo
+added-to-playlist = Đã thêm vào { $playlist }
+already-in-playlist = Đã có trong { $playlist }
+delete-playlist = Xóa danh sách phát
+delete-playlist-confirm = Xóa “{ $playlist }”? Không thể hoàn tác.
+delete = Xóa
+deleted-playlist = Đã xóa { $playlist }
+
+# Updates
+update-available = Đã có Maré Player { $version }
+update-whats-new = Có gì mới
+check-for-updates = Kiểm tra cập nhật
+check-for-updates-description = Mỗi lần chạy, hỏi GitHub một lần xem có bản phát hành mới hơn không.
 
 # Chú thích
 tooltip-search = Tìm kiếm
 tooltip-settings = Cài đặt
 tooltip-shuffle-play = Phát ngẫu nhiên
+tooltip-reverse-order = Đảo thứ tự
 tooltip-refresh = Làm mới
 tooltip-previous-track = Bài trước
 tooltip-next-track = Bài tiếp theo

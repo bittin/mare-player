@@ -66,7 +66,6 @@ albums = Albümler
 artists = Sanatçılar
 playlists = Çalma Listeleri
 videos = Videolar
-profiles = Profiller
 tracks = Parçalar
 favorite-tracks = Favori Parçalar
 
@@ -96,6 +95,7 @@ fallback-playlist = Çalma Listesi
 released = Yayın tarihi: {$year}
 quality-label = Kalite: {$quality}
 track-count = {$count} parça
+video-count = {$count} video
 artist-count = {$count} sanatçı
 
 # Arama
@@ -123,11 +123,35 @@ logging-description = Maré’nin sistem günlüğüne ne kadar yazdığı. Heme
 clear-history = Geçmişi Temizle
 history-filter-placeholder = Geçmişi filtrele…
 favorite-tracks-filter-placeholder = Favori parçaları filtrele…
+sort-name = A–Z
+sort-date-added = Eklenme tarihi
+sort-last-updated = Son güncelleme
+
+# Changing playlists
+add-to-playlist = Çalma listesine ekle
+new-playlist = Yeni çalma listesi
+playlist-name = Çalma listesi adı
+playlist-private = Gizli
+playlist-public = Herkese açık
+create-playlist = Oluştur
+added-to-playlist = { $playlist } listesine eklendi
+already-in-playlist = Zaten { $playlist } listesinde
+delete-playlist = Çalma listesini sil
+delete-playlist-confirm = “{ $playlist }” silinsin mi? Bu işlem geri alınamaz.
+delete = Sil
+deleted-playlist = { $playlist } silindi
+
+# Updates
+update-available = Maré Player { $version } kullanıma sunuldu
+update-whats-new = Yenilikler
+check-for-updates = Güncellemeleri denetle
+check-for-updates-description = Her çalıştırmada bir kez GitHub’a daha yeni bir sürüm olup olmadığını sorar.
 
 # İpuçları
 tooltip-search = Ara
 tooltip-settings = Ayarlar
 tooltip-shuffle-play = Karışık çal
+tooltip-reverse-order = Sırayı tersine çevir
 tooltip-refresh = Yenile
 tooltip-previous-track = Önceki parça
 tooltip-next-track = Sonraki parça

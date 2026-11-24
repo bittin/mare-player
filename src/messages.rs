@@ -11,7 +11,8 @@ use cosmic::iced::window::Id;
 use cosmic::surface;
 use tokio::sync::Mutex;
 
-use crate::config::{AudioQuality, Config, LogLevel};
+use crate::config::{AudioQuality, Config, LogLevel, SortKey};
+use crate::handlers::data::playlists::PlaylistAdd;
 use crate::tidal::auth::LoginRequest;
 use crate::tidal::client::{PlaybackFailure, PlaybackUrl};
 use crate::tidal::models::{
@@ -84,6 +85,16 @@ pub enum Message {
     ToggleFavoriteTracksFilter,
     /// Favorite tracks filter query text changed (local client-side filter)
     FavoriteTracksFilterChanged(String),
+    /// A favourite tracks sort button was pressed (see `ListSort::pressed`)
+    SortFavoriteTracks(SortKey),
+    /// A favourite albums sort button was pressed (see `ListSort::pressed`)
+    SortFavoriteAlbums(SortKey),
+    /// A followed artists sort button was pressed (see `ListSort::pressed`)
+    SortFollowedArtists(SortKey),
+    /// A playlists sort button was pressed (see `ListSort::pressed`)
+    SortPlaylists(SortKey),
+    /// A mixes sort button was pressed (see `ListSort::pressed`)
+    SortMixes(SortKey),
     /// Show the mixes & radio view
     ShowMixes,
     /// Show the feed view (new releases from followed artists)
@@ -300,6 +311,18 @@ pub enum Message {
     // Error handling
     /// Clear the current error message
     ClearError,
+    /// The current view's list scrolled to this offset
+    ListScrolled(f32),
+    /// Clear the green note banner
+    ClearNote,
+    /// The startup check for a newer release finished
+    UpdateChecked(Result<Option<crate::update_check::AvailableUpdate>, String>),
+    /// Open the available update's release notes
+    OpenReleaseNotes,
+    /// Hide the update banner for the rest of this run
+    DismissUpdate,
+    /// Turn the check for a newer release on or off
+    SetCheckForUpdates(bool),
 
     // Image loading
     /// Image loaded (url, width, height, rgba_pixels)
@@ -317,6 +340,28 @@ pub enum Message {
     ShareAlbum(String, String),
     /// Cancel share dialog
     CancelShare,
+
+    // Adding to playlists
+    /// Open the "Add to playlist" picker for a track or video
+    ShowAddToPlaylist(Track),
+    /// The picker's new-playlist name was edited
+    NewPlaylistNameChanged(String),
+    /// The picker's new playlist was made public (`true`) or private
+    NewPlaylistPublicChanged(bool),
+    /// Add the picker's track to one of the user's playlists (uuid)
+    AddToPlaylist(String),
+    /// Create the picker's new playlist with its track in it
+    CreatePlaylistWithTrack,
+    /// Adding to a playlist finished
+    AddedToPlaylist(Result<PlaylistAdd, String>),
+    /// Ask to confirm deleting the open playlist
+    AskDeletePlaylist,
+    /// Keep the open playlist after all
+    CancelDeletePlaylist,
+    /// Delete the playlist awaiting confirmation
+    DeletePlaylist,
+    /// Deleting a playlist finished: its (uuid, title), or why not
+    PlaylistDeleted(Result<(String, String), String>),
 
     // Settings
     /// Set audio quality preference

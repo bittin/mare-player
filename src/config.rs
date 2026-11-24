@@ -143,6 +143,39 @@ impl AsRef<str> for LogLevel {
     }
 }
 
+/// What a collection list (favourites, artists, playlists, mixes) is
+/// ordered by.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SortKey {
+    /// By title, ignoring case and accents.
+    #[default]
+    Name,
+    /// By date: when it joined the collection, or for mixes, when TIDAL
+    /// last refreshed it. (Saved in the config, so the name stays.)
+    DateAdded,
+}
+
+/// How a collection list is ordered: a key and a direction. Defaults to A–Z.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ListSort {
+    pub key: SortKey,
+    /// Z–A, or newest first.
+    pub descending: bool,
+}
+
+impl ListSort {
+    /// The sort after pressing `key`'s button: pressing the active key flips
+    /// the direction; another key becomes active in its natural direction,
+    /// A–Z or newest first.
+    pub fn pressed(self, key: SortKey) -> Self {
+        if key == self.key {
+            Self { key, descending: !self.descending }
+        } else {
+            Self { key, descending: key == SortKey::DateAdded }
+        }
+    }
+}
+
 /// Configuration for Maré Player
 #[derive(Debug, Clone, CosmicConfigEntry, PartialEq)]
 #[version = 2]
@@ -162,6 +195,18 @@ pub struct Config {
     /// -7..-11 dB, so the -8 dB default brings videos roughly in line with
     /// normalized tracks.
     pub video_preamp_db: f32,
+    /// How the favourite tracks list is ordered.
+    pub favorite_tracks_sort: ListSort,
+    /// How the favourite albums list is ordered.
+    pub favorite_albums_sort: ListSort,
+    /// How the followed artists list is ordered.
+    pub followed_artists_sort: ListSort,
+    /// How the playlists list is ordered.
+    pub playlists_sort: ListSort,
+    /// How the mixes & radio list is ordered.
+    pub mixes_sort: ListSort,
+    /// Whether to ask GitHub, once per run, if a newer release is out.
+    pub check_for_updates: bool,
 }
 
 impl Default for Config {
@@ -172,6 +217,42 @@ impl Default for Config {
             log_level: LogLevel::Info,
             volume_level: 1.0,
             video_preamp_db: -8.0,
+            favorite_tracks_sort: ListSort::default(),
+            favorite_albums_sort: ListSort::default(),
+            followed_artists_sort: ListSort::default(),
+            playlists_sort: ListSort::default(),
+            mixes_sort: ListSort::default(),
+            check_for_updates: true,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ListSort, SortKey};
+
+    const A_Z: ListSort = ListSort { key: SortKey::Name, descending: false };
+    const Z_A: ListSort = ListSort { key: SortKey::Name, descending: true };
+    const OLDEST: ListSort = ListSort { key: SortKey::DateAdded, descending: false };
+    const NEWEST: ListSort = ListSort { key: SortKey::DateAdded, descending: true };
+
+    #[test]
+    fn lists_start_a_to_z() {
+        assert_eq!(ListSort::default(), A_Z);
+    }
+
+    #[test]
+    fn the_active_button_reverses_and_the_other_starts_in_its_natural_direction() {
+        assert_eq!(A_Z.pressed(SortKey::Name), Z_A);
+        assert_eq!(Z_A.pressed(SortKey::Name), A_Z);
+        assert_eq!(NEWEST.pressed(SortKey::DateAdded), OLDEST);
+        assert_eq!(OLDEST.pressed(SortKey::DateAdded), NEWEST);
+        // Switching keys ignores the previous direction.
+        for from in [A_Z, Z_A] {
+            assert_eq!(from.pressed(SortKey::DateAdded), NEWEST);
+        }
+        for from in [NEWEST, OLDEST] {
+            assert_eq!(from.pressed(SortKey::Name), A_Z);
         }
     }
 }

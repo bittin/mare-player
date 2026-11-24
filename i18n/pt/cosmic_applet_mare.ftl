@@ -66,7 +66,6 @@ albums = Álbuns
 artists = Artistas
 playlists = Playlists
 videos = Vídeos
-profiles = Perfis
 tracks = Faixas
 favorite-tracks = Faixas Favoritas
 
@@ -99,6 +98,10 @@ track-count = {$count} {$count ->
     [one] faixa
    *[other] faixas
 }
+video-count = {$count} {$count ->
+    [one] vídeo
+   *[other] vídeos
+}
 artist-count = {$count} {$count ->
     [one] artista
    *[other] artistas
@@ -129,11 +132,35 @@ logging-description = Quanto o Maré grava no diário do sistema. Aplica-se imed
 clear-history = Limpar Histórico
 history-filter-placeholder = Filtrar histórico…
 favorite-tracks-filter-placeholder = Filtrar faixas favoritas…
+sort-name = A–Z
+sort-date-added = Data de adição
+sort-last-updated = Última atualização
+
+# Changing playlists
+add-to-playlist = Adicionar a uma playlist
+new-playlist = Nova playlist
+playlist-name = Nome da playlist
+playlist-private = Privada
+playlist-public = Pública
+create-playlist = Criar
+added-to-playlist = Adicionado a { $playlist }
+already-in-playlist = Já está em { $playlist }
+delete-playlist = Excluir playlist
+delete-playlist-confirm = Excluir “{ $playlist }”? Isso não pode ser desfeito.
+delete = Excluir
+deleted-playlist = { $playlist } excluída
+
+# Updates
+update-available = Maré Player { $version } está disponível
+update-whats-new = Novidades
+check-for-updates = Verificar atualizações
+check-for-updates-description = Uma vez por execução, pergunta ao GitHub se há uma versão mais recente.
 
 # Dicas
 tooltip-search = Pesquisar
 tooltip-settings = Configurações
 tooltip-shuffle-play = Reproduzir aleatoriamente
+tooltip-reverse-order = Inverter ordem
 tooltip-refresh = Atualizar
 tooltip-previous-track = Faixa anterior
 tooltip-next-track = Próxima faixa

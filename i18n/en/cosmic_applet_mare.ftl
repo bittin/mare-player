@@ -66,7 +66,6 @@ albums = Albums
 artists = Artists
 playlists = Playlists
 videos = Videos
-profiles = Profiles
 tracks = Tracks
 favorite-tracks = Favorite Tracks
 
@@ -119,6 +118,10 @@ track-count = {$count} {$count ->
     [one] track
    *[other] tracks
 }
+video-count = {$count} {$count ->
+    [one] video
+   *[other] videos
+}
 artist-count = {$count} {$count ->
     [one] artist
    *[other] artists
@@ -149,11 +152,35 @@ logging-description = How much Maré writes to the system journal. Applies immed
 clear-history = Clear History
 history-filter-placeholder = Filter history…
 favorite-tracks-filter-placeholder = Filter favorite tracks…
+sort-name = A–Z
+sort-date-added = Date added
+sort-last-updated = Last updated
+
+# Changing playlists
+add-to-playlist = Add to playlist
+new-playlist = New playlist
+playlist-name = Playlist name
+playlist-private = Private
+playlist-public = Public
+create-playlist = Create
+added-to-playlist = Added to { $playlist }
+already-in-playlist = Already in { $playlist }
+delete-playlist = Delete playlist
+delete-playlist-confirm = Delete “{ $playlist }”? This can’t be undone.
+delete = Delete
+deleted-playlist = Deleted { $playlist }
+
+# Updates
+update-available = Maré Player { $version } is available
+update-whats-new = What’s new
+check-for-updates = Check for updates
+check-for-updates-description = Once per run, asks GitHub whether a newer release is out.
 
 # Tooltips
 tooltip-search = Search
 tooltip-settings = Settings
 tooltip-shuffle-play = Shuffle play
+tooltip-reverse-order = Reverse order
 tooltip-refresh = Refresh
 tooltip-previous-track = Previous track
 tooltip-next-track = Next track

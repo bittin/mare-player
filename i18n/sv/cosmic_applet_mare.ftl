@@ -66,7 +66,6 @@ albums = Album
 artists = Artister
 playlists = Spellistor
 videos = Videor
-profiles = Profiler
 tracks = Spår
 favorite-tracks = Favoritspår
 
@@ -99,6 +98,10 @@ track-count = {$count} {$count ->
     [one] spår
    *[other] flera spår
 }
+video-count = {$count} {$count ->
+    [one] video
+   *[other] videor
+}
 artist-count = {$count} {$count ->
     [one] artist
    *[other] artister
@@ -129,11 +132,35 @@ logging-description = Hur mycket Maré skriver till systemjournalen. Gäller dir
 clear-history = Rensa historik
 history-filter-placeholder = Filtrera historik…
 favorite-tracks-filter-placeholder = Filtrera favoritlåtar…
+sort-name = A–Ö
+sort-date-added = Datum tillagt
+sort-last-updated = Senast uppdaterad
+
+# Changing playlists
+add-to-playlist = Lägg till i spellista
+new-playlist = Ny spellista
+playlist-name = Spellistans namn
+playlist-private = Privat
+playlist-public = Offentlig
+create-playlist = Skapa
+added-to-playlist = Tillagd i { $playlist }
+already-in-playlist = Finns redan i { $playlist }
+delete-playlist = Ta bort spellista
+delete-playlist-confirm = Ta bort ”{ $playlist }”? Det går inte att ångra.
+delete = Ta bort
+deleted-playlist = { $playlist } togs bort
+
+# Updates
+update-available = Maré Player { $version } finns tillgänglig
+update-whats-new = Nyheter
+check-for-updates = Sök efter uppdateringar
+check-for-updates-description = Frågar GitHub en gång per start om en nyare version finns.
 
 # Verktygstips
 tooltip-search = Sök
 tooltip-settings = Inställningar
 tooltip-shuffle-play = Blandad uppspelning
+tooltip-reverse-order = Vänd ordning
 tooltip-refresh = Uppdatera
 tooltip-previous-track = Föregående spår
 tooltip-next-track = Nästa spår

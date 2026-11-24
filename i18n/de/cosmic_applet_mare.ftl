@@ -66,7 +66,6 @@ albums = Alben
 artists = Künstler
 playlists = Playlists
 videos = Videos
-profiles = Profile
 tracks = Titel
 favorite-tracks = Lieblingstitel
 
@@ -99,6 +98,10 @@ track-count = {$count} {$count ->
     [one] Titel
    *[other] Titel
 }
+video-count = {$count} {$count ->
+    [one] Video
+   *[other] Videos
+}
 artist-count = {$count} {$count ->
     [one] Künstler
    *[other] Künstler
@@ -129,11 +132,35 @@ logging-description = Wie viel Maré ins Systemjournal schreibt. Gilt sofort.
 clear-history = Verlauf löschen
 history-filter-placeholder = Verlauf filtern…
 favorite-tracks-filter-placeholder = Lieblingstitel filtern…
+sort-name = A–Z
+sort-date-added = Hinzugefügt am
+sort-last-updated = Zuletzt aktualisiert
+
+# Changing playlists
+add-to-playlist = Zur Playlist hinzufügen
+new-playlist = Neue Playlist
+playlist-name = Name der Playlist
+playlist-private = Privat
+playlist-public = Öffentlich
+create-playlist = Erstellen
+added-to-playlist = Zu { $playlist } hinzugefügt
+already-in-playlist = Bereits in { $playlist }
+delete-playlist = Playlist löschen
+delete-playlist-confirm = „{ $playlist }“ löschen? Das lässt sich nicht rückgängig machen.
+delete = Löschen
+deleted-playlist = { $playlist } gelöscht
+
+# Updates
+update-available = Maré Player { $version } ist verfügbar
+update-whats-new = Was ist neu
+check-for-updates = Nach Updates suchen
+check-for-updates-description = Fragt einmal pro Start bei GitHub nach einer neueren Version.
 
 # Tooltips
 tooltip-search = Suche
 tooltip-settings = Einstellungen
 tooltip-shuffle-play = Zufällige Wiedergabe
+tooltip-reverse-order = Reihenfolge umkehren
 tooltip-refresh = Aktualisieren
 tooltip-previous-track = Vorheriger Titel
 tooltip-next-track = Nächster Titel

@@ -122,6 +122,7 @@ mod track {
             explicit: true,
             audio_quality: Some("HI_RES".to_string()),
             is_video: false,
+            added_at: Some(1_767_225_600_000),
         };
         let json = serde_json::to_string(&t).unwrap();
         let t2: Track = serde_json::from_str(&json).unwrap();
@@ -136,6 +137,16 @@ mod track {
         assert_eq!(t2.cover_url, Some("https://example.com/cover.jpg".to_string()));
         assert!(t2.explicit);
         assert_eq!(t2.audio_quality, Some("HI_RES".to_string()));
+        assert_eq!(t2.added_at, Some(1_767_225_600_000));
+    }
+
+    #[test]
+    fn tracks_cached_without_an_added_date_still_load() {
+        let mut json = serde_json::to_value(Track { id: "7".to_string(), ..Default::default() }).unwrap();
+        json.as_object_mut().unwrap().remove("added_at");
+        let track: Track = serde_json::from_value(json).unwrap();
+        assert_eq!(track.id, "7");
+        assert_eq!(track.added_at, None);
     }
 
     #[test]
@@ -208,6 +219,7 @@ mod album {
             audio_quality: Some("LOSSLESS".to_string()),
             quality_tags: vec!["LOSSLESS".to_string()],
             review: Some("A masterpiece".to_string()),
+            added_at: Some(1_767_225_600_000),
         };
         let b = a.clone();
         assert_eq!(a.id, b.id);
@@ -221,6 +233,7 @@ mod album {
         assert_eq!(a.audio_quality, b.audio_quality);
         assert_eq!(a.quality_tags, b.quality_tags);
         assert_eq!(a.review, b.review);
+        assert_eq!(a.added_at, b.added_at);
     }
 
     #[test]
@@ -238,6 +251,7 @@ mod album {
             audio_quality: Some("HI_RES".to_string()),
             quality_tags: vec!["LOSSLESS".to_string(), "HIRES_LOSSLESS".to_string()],
             review: None,
+            added_at: Some(1_767_225_600_000),
         };
         let json = serde_json::to_string(&a).unwrap();
         let a2: Album = serde_json::from_str(&json).unwrap();
@@ -246,6 +260,16 @@ mod album {
         assert_eq!(a2.num_tracks, 8);
         assert_eq!(a2.advertised_quality().as_deref(), Some("Hi-Res Lossless"));
         assert!(!a2.explicit);
+        assert_eq!(a2.added_at, Some(1_767_225_600_000));
+    }
+
+    #[test]
+    fn albums_cached_without_an_added_date_still_load() {
+        let mut json = serde_json::to_value(Album { id: "7".to_string(), ..Default::default() }).unwrap();
+        json.as_object_mut().unwrap().remove("added_at");
+        let album: Album = serde_json::from_value(json).unwrap();
+        assert_eq!(album.id, "7");
+        assert_eq!(album.added_at, None);
     }
 
     #[test]
@@ -286,6 +310,7 @@ mod artist {
             popularity: Some(95),
             roles: vec!["Artist".to_string(), "Producer".to_string()],
             url: Some("https://tidal.com/artist/123".to_string()),
+            added_at: Some(1_767_225_600_000),
         };
         let b = a.clone();
         assert_eq!(a.id, b.id);
@@ -295,6 +320,7 @@ mod artist {
         assert_eq!(a.popularity, b.popularity);
         assert_eq!(a.roles, b.roles);
         assert_eq!(a.url, b.url);
+        assert_eq!(a.added_at, b.added_at);
     }
 
     #[test]
@@ -307,6 +333,7 @@ mod artist {
             popularity: Some(75),
             roles: vec!["DJ".to_string(), "Songwriter".to_string()],
             url: Some("https://tidal.com/artist/42".to_string()),
+            added_at: None,
         };
         let json = serde_json::to_string(&a).unwrap();
         let a2: Artist = serde_json::from_str(&json).unwrap();
@@ -405,18 +432,24 @@ mod playlist {
             description: Some("A cool playlist".to_string()),
             creator_name: Some("user42".to_string()),
             num_tracks: 50,
+            num_videos: 4,
             duration: 7200,
             last_updated: Some("2024-01-01T00:00:00Z".to_string()),
             image_url: Some("https://example.com/playlist.jpg".to_string()),
             is_user_playlist: true,
+            added_at: Some(1_767_225_600_000),
+            public: Some(true),
         };
         let json = serde_json::to_string(&p).unwrap();
         let p2: Playlist = serde_json::from_str(&json).unwrap();
         assert_eq!(p2.uuid, "abc-def-123");
         assert_eq!(p2.title, "My Playlist");
         assert_eq!(p2.num_tracks, 50);
+        assert_eq!(p2.num_videos, 4);
         assert!(p2.is_user_playlist);
         assert_eq!(p2.description, Some("A cool playlist".to_string()));
+        assert_eq!(p2.added_at, Some(1_767_225_600_000));
+        assert_eq!(p2.public, Some(true));
     }
 
     #[test]
@@ -427,10 +460,13 @@ mod playlist {
             description: Some("desc".to_string()),
             creator_name: Some("creator".to_string()),
             num_tracks: 10,
+            num_videos: 2,
             duration: 600,
             last_updated: Some("2024-06-15".to_string()),
             image_url: Some("https://img.example.com/p.jpg".to_string()),
             is_user_playlist: false,
+            added_at: Some(1_767_225_600_000),
+            public: Some(false),
         };
         let q = p.clone();
         assert_eq!(p.uuid, q.uuid);
@@ -438,9 +474,12 @@ mod playlist {
         assert_eq!(p.description, q.description);
         assert_eq!(p.creator_name, q.creator_name);
         assert_eq!(p.num_tracks, q.num_tracks);
+        assert_eq!(p.num_videos, q.num_videos);
         assert_eq!(p.duration, q.duration);
         assert_eq!(p.last_updated, q.last_updated);
         assert_eq!(p.image_url, q.image_url);
+        assert_eq!(p.added_at, q.added_at);
+        assert_eq!(p.public, q.public);
         assert_eq!(p.is_user_playlist, q.is_user_playlist);
     }
 }
@@ -470,6 +509,7 @@ mod mix {
             subtitle: "Fresh picks for you".to_string(),
             mix_type: "DAILY_MIX".to_string(),
             image_url: Some("https://example.com/mix.jpg".to_string()),
+            updated_at: Some(1_791_880_510_041),
         };
         let m2 = m.clone();
         assert_eq!(m.id, m2.id);
@@ -477,6 +517,7 @@ mod mix {
         assert_eq!(m.subtitle, m2.subtitle);
         assert_eq!(m.mix_type, m2.mix_type);
         assert_eq!(m.image_url, m2.image_url);
+        assert_eq!(m.updated_at, m2.updated_at);
     }
 
     #[test]
@@ -487,11 +528,13 @@ mod mix {
             subtitle: "Based on your listening".to_string(),
             mix_type: "ARTIST_MIX".to_string(),
             image_url: Some("https://example.com/art.jpg".to_string()),
+            updated_at: Some(1_791_880_510_041),
         };
         let json = serde_json::to_string(&m).unwrap();
         let m2: Mix = serde_json::from_str(&json).unwrap();
         assert_eq!(m2.id, "mix-123");
         assert_eq!(m2.mix_type, "ARTIST_MIX");
+        assert_eq!(m2.updated_at, Some(1_791_880_510_041));
     }
 
     #[test]
@@ -865,6 +908,7 @@ mod scenarios {
             subtitle: "No cover art".to_string(),
             mix_type: "DISCOVERY_MIX".to_string(),
             image_url: None,
+            updated_at: None,
         };
         assert!(m.image_url.is_none());
         let json = serde_json::to_string(&m).unwrap();

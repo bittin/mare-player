@@ -29,6 +29,21 @@ pub fn tidal_cover_url(uuid: &str) -> String {
     tidal_cover_url_sized(uuid, DEFAULT_COVER_SIZE_PX)
 }
 
+/// A 16:9 size every TIDAL video still comes in. Asked for a square size,
+/// TIDAL sometimes crops a still and sometimes letterboxes it.
+const VIDEO_STILL_SIZE: &str = "640x360";
+
+/// `url`, a TIDAL CDN image URL, at another `size` (`"640x360"`). Other URLs
+/// come back as they are.
+fn tidal_image_at_size(url: &str, size: &str) -> String {
+    match url.rsplit_once('/') {
+        Some((base, file)) if base.starts_with("https://resources.tidal.com/images/") && file.ends_with(".jpg") => {
+            format!("{base}/{size}.jpg")
+        }
+        _ => url.to_string(),
+    }
+}
+
 /// Build a TIDAL CDN URL for an image UUID at a specific square size.
 pub fn tidal_cover_url_sized(uuid: &str, size_px: u32) -> String {
     format!("https://resources.tidal.com/images/{}/{size_px}x{size_px}.jpg", uuid.replace('-', "/"))
@@ -73,6 +88,10 @@ pub struct Track {
     /// engine. Defaults to `false` and is only set for playlist video items.
     #[serde(default)]
     pub is_video: bool,
+    /// When the user added the track to their favourites, as Unix
+    /// milliseconds. Only set for favourite tracks.
+    #[serde(default)]
+    pub added_at: Option<i64>,
 }
 
 impl std::fmt::Display for Track {
@@ -93,6 +112,14 @@ impl Track {
         let minutes = self.duration / 60;
         let seconds = self.duration % 60;
         format!("{}:{:02}", minutes, seconds)
+    }
+
+    /// The picture a 2×2 playlist cover grid shows for this entry: its
+    /// album cover, or for a music video its 16:9 still, which the grid crops
+    /// to a square without letterboxing.
+    pub fn grid_art_url(&self) -> Option<String> {
+        let url = self.cover_url.as_deref()?;
+        Some(if self.is_video { tidal_image_at_size(url, VIDEO_STILL_SIZE) } else { url.to_string() })
     }
 }
 
@@ -120,6 +147,7 @@ impl From<tidlers::client::models::track::Track> for Track {
             explicit: t.explicit,
             audio_quality: Some(t.audio_quality),
             is_video: false,
+            added_at: None,
         }
     }
 }
@@ -141,6 +169,7 @@ impl From<tidlers::client::models::video::Video> for Track {
             explicit: v.explicit,
             audio_quality: None,
             is_video: true,
+            added_at: None,
         }
     }
 }
@@ -160,10 +189,11 @@ impl From<tidlers::client::models::search::SearchTrackHit> for Track {
             artist_id,
             album_name: t.album.as_ref().map(|a| a.title.clone()),
             album_id: t.album.as_ref().map(|a| a.id.to_string()),
-            cover_url: t.album.as_ref().map(|a| tidal_cover_url(&a.cover)),
+            cover_url: t.album.as_ref().and_then(|a| a.cover.as_deref()).map(tidal_cover_url),
             explicit: t.explicit,
             audio_quality: t.audio_quality,
             is_video: false,
+            added_at: None,
         }
     }
 }
@@ -202,6 +232,10 @@ pub struct Album {
     pub quality_tags: Vec<String>,
     /// Album review / editorial description text
     pub review: Option<String>,
+    /// When the user added the album to their favourites, as Unix
+    /// milliseconds. Only set for favourite albums.
+    #[serde(default)]
+    pub added_at: Option<i64>,
 }
 
 impl Album {
@@ -240,6 +274,7 @@ impl From<tidlers::client::models::album::Album> for Album {
             audio_quality: a.audio_quality,
             quality_tags: a.media_metadata.map(|metadata| metadata.tags).unwrap_or_default(),
             review: None,
+            added_at: None,
         }
     }
 }
@@ -260,6 +295,7 @@ impl From<tidlers::client::models::album::AlbumResponse> for Album {
             audio_quality: Some(a.audio_quality),
             quality_tags: a.media_metadata.tags,
             review: None,
+            added_at: None,
         }
     }
 }
@@ -283,6 +319,7 @@ impl From<tidlers::client::models::search::SearchAlbumHit> for Album {
             audio_quality: a.audio_quality,
             quality_tags: Vec::new(),
             review: None,
+            added_at: None,
         }
     }
 }
@@ -304,6 +341,10 @@ pub struct Artist {
     pub roles: Vec<String>,
     /// TIDAL URL for the artist page
     pub url: Option<String>,
+    /// When the user followed the artist, as Unix milliseconds. Only set
+    /// for followed artists.
+    #[serde(default)]
+    pub added_at: Option<i64>,
 }
 
 /// Convert from tidlers Artist type (basic, embedded in other responses)
@@ -317,6 +358,7 @@ impl From<tidlers::client::models::artist::Artist> for Artist {
             popularity: None,
             roles: Vec::new(),
             url: None,
+            added_at: None,
         }
     }
 }
@@ -332,6 +374,7 @@ impl From<tidlers::client::models::artist::ArtistResponse> for Artist {
             popularity: Some(a.popularity),
             roles: a.artist_roles.into_iter().map(|r| r.category).collect(),
             url: Some(a.url),
+            added_at: None,
         }
     }
 }
@@ -347,6 +390,7 @@ impl From<tidlers::client::models::collection::artist::CollectionArtistDetails> 
             popularity: u32::try_from(a.popularity).ok(),
             roles: a.artist_roles.into_iter().map(|r| r.category).collect(),
             url: Some(a.url),
+            added_at: None,
         }
     }
 }
@@ -362,6 +406,7 @@ impl From<tidlers::client::models::search::SearchArtistHit> for Artist {
             popularity: None,
             roles: Vec::new(),
             url: None,
+            added_at: None,
         }
     }
 }
@@ -382,6 +427,7 @@ impl From<tidlers::client::models::album::ArtistAlbum> for Album {
             audio_quality: Some(a.audio_quality),
             quality_tags: a.media_metadata.tags,
             review: None,
+            added_at: None,
         }
     }
 }
@@ -397,8 +443,11 @@ pub struct Playlist {
     pub description: Option<String>,
     /// Creator username
     pub creator_name: Option<String>,
-    /// Number of tracks
+    /// Number of tracks, not counting music videos
     pub num_tracks: u32,
+    /// Number of music videos, which TIDAL counts apart from tracks
+    #[serde(default)]
+    pub num_videos: u32,
     /// Total duration in seconds
     pub duration: u32,
     /// Last updated timestamp
@@ -407,9 +456,22 @@ pub struct Playlist {
     pub image_url: Option<String>,
     /// Whether this is a user-created playlist
     pub is_user_playlist: bool,
+    /// When the user created the playlist, as Unix milliseconds. Only set
+    /// for the user's own playlists.
+    #[serde(default)]
+    pub added_at: Option<i64>,
+    /// Whether anyone can find the playlist (`Some(false)`: private). Only
+    /// known for the user's own playlists.
+    #[serde(default)]
+    pub public: Option<bool>,
 }
 
 impl Playlist {
+    /// Whether it holds music videos and nothing else.
+    pub fn is_videos_only(&self) -> bool {
+        self.num_tracks == 0 && self.num_videos > 0
+    }
+
     /// Format duration as H:MM:SS or M:SS depending on length
     pub fn duration_display(&self) -> String {
         let hours = self.duration / 3600;
@@ -428,10 +490,15 @@ impl From<tidlers::client::models::playlist::PlaylistResponse> for Playlist {
             description: Some(p.description),
             creator_name: None,
             num_tracks: p.number_of_tracks as u32,
+            num_videos: p.number_of_videos as u32,
             duration: p.duration as u32,
             last_updated: Some(p.last_updated),
-            image_url: Some(tidal_cover_url(&p.image)),
+            // `image` only comes in rectangular sizes, so a square request
+            // for it is refused (403); `squareImage` is the square cover.
+            image_url: Some(tidal_cover_url(if p.square_image.is_empty() { &p.image } else { &p.square_image })),
             is_user_playlist: true,
+            added_at: None,
+            public: Some(p.public_playlist),
         }
     }
 }
@@ -447,10 +514,13 @@ impl From<tidlers::client::models::search::SearchPlaylistHit> for Playlist {
             description: p.description,
             creator_name: None,
             num_tracks: p.number_of_tracks.unwrap_or(0),
+            num_videos: 0,
             duration: p.duration.unwrap_or(0) as u32,
             last_updated: p.last_updated,
             image_url: image_id.as_deref().map(tidal_cover_url),
             is_user_playlist: false,
+            added_at: None,
+            public: None,
         }
     }
 }
@@ -468,6 +538,9 @@ pub struct Mix {
     pub mix_type: String,
     /// Cover image URL (best available from mix_images)
     pub image_url: Option<String>,
+    /// When TIDAL last refreshed the mix, as Unix milliseconds.
+    #[serde(default)]
+    pub updated_at: Option<i64>,
 }
 
 /// Convert a tidlers home-feed mix. The title falls back to "Mix", the
@@ -480,6 +553,7 @@ impl From<tidlers::client::models::home::HomeMixData> for Mix {
             image_url: m.mix_images.into_iter().max_by_key(|image| image.width).map(|image| image.url),
             id: m.id,
             mix_type: m.mix_type,
+            updated_at: i64::try_from(m.updated).ok(),
         }
     }
 }
@@ -1282,7 +1356,7 @@ mod tests {
             )
             .collect();
         serde_json::from_value(serde_json::json!({
-            "type": "DAILY_MIX", "countryCode": "US", "updated": 1, "id": "mix-123", "isStableId": true,
+            "type": "DAILY_MIX", "countryCode": "US", "updated": 1_791_880_510_041_u64, "id": "mix-123", "isStableId": true,
             "artifactIdType": "trackGroupId", "mixImages": images, "sortType": "POPULARITY", "detailMixImages": [],
             "titleTextInfo": {"text": title, "color": null},
             "subtitleTextInfo": {"text": subtitle, "color": null},
@@ -1293,6 +1367,31 @@ mod tests {
     }
 
     #[test]
+    fn a_search_track_from_an_album_without_artwork_has_no_cover() {
+        let hit = |cover: serde_json::Value| -> tidlers::client::models::search::SearchTrackHit {
+            serde_json::from_value(serde_json::json!({
+                "artifactType": "CatalogueSuggestionsTrackDto", "id": 95459236, "editable": false,
+                "title": "Beving: Hanging D",
+                "album": {"id": 95459227, "title": "Conatus", "version": null, "cover": cover,
+                          "vibrantColor": null, "videoCover": null, "releaseDate": "2018-09-28", "upload": false},
+                "artists": [{"id": 8550992, "name": "Cello Octet Amsterdam", "handle": null, "picture": null,
+                              "userId": null, "type": "MAIN"}],
+                "version": null, "duration": 321, "popularity": 52, "doublePopularity": 0.52,
+                "explicit": false, "replayGain": -9.1
+            }))
+            .expect("search track fixture should deserialize")
+        };
+        let track = Track::from(hit(serde_json::Value::Null));
+        assert_eq!(track.album_name.as_deref(), Some("Conatus"));
+        assert_eq!(track.cover_url, None);
+        let track = Track::from(hit(serde_json::json!("9a83b806-f311-4bbf-8763-d8f68c0277f5")));
+        assert_eq!(
+            track.cover_url.as_deref(),
+            Some("https://resources.tidal.com/images/9a83b806/f311/4bbf/8763/d8f68c0277f5/320x320.jpg")
+        );
+    }
+
+    #[test]
     fn home_mix_converts_with_the_widest_image() {
         let mix = Mix::from(home_mix(Some("My Daily Discovery"), Some("Updated daily"), Some("Long"), &[160, 640, 320]));
         assert_eq!(mix.id, "mix-123");
@@ -1300,6 +1399,7 @@ mod tests {
         assert_eq!(mix.title, "My Daily Discovery");
         assert_eq!(mix.subtitle, "Updated daily");
         assert_eq!(mix.image_url.as_deref(), Some("https://images.tidal.com/640.jpg"));
+        assert_eq!(mix.updated_at, Some(1_791_880_510_041));
     }
 
     #[test]
@@ -1393,6 +1493,29 @@ mod tests {
 
         let track2 = Track { duration: 60, ..Default::default() };
         assert_eq!(track2.duration_display(), "1:00");
+    }
+
+    #[test]
+    fn a_grid_shows_covers_and_whole_video_stills() {
+        let cover = "https://resources.tidal.com/images/aa/bb/320x320.jpg";
+        let track = Track { cover_url: Some(cover.into()), ..Default::default() };
+        assert_eq!(track.grid_art_url().as_deref(), Some(cover));
+        // A video's square still may be letterboxed; its 16:9 one never is.
+        let video = Track { is_video: true, ..track.clone() };
+        assert_eq!(video.grid_art_url().as_deref(), Some("https://resources.tidal.com/images/aa/bb/640x360.jpg"));
+        assert_eq!(Track { cover_url: None, ..video.clone() }.grid_art_url(), None);
+        // Only TIDAL CDN images are resized.
+        let elsewhere = Track { cover_url: Some("https://example.com/a/320x320.jpg".into()), ..video };
+        assert_eq!(elsewhere.grid_art_url().as_deref(), Some("https://example.com/a/320x320.jpg"));
+    }
+
+    #[test]
+    fn only_a_playlist_of_nothing_but_videos_is_videos_only() {
+        let playlist = |num_tracks, num_videos| Playlist { num_tracks, num_videos, ..Default::default() };
+        assert!(playlist(0, 3).is_videos_only());
+        assert!(!playlist(2, 3).is_videos_only());
+        assert!(!playlist(2, 0).is_videos_only());
+        assert!(!playlist(0, 0).is_videos_only());
     }
 
     #[test]

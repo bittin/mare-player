@@ -173,8 +173,14 @@ impl cosmic::Application for AppModel {
             favorite_album_ids: HashSet::new(),
             followed_artist_ids: HashSet::new(),
             nav_stack: Vec::new(),
+            list_offset: 0.0,
+            add_to_playlist: None,
+            confirm_delete_playlist: None,
             is_loading: true,
             error_message: None,
+            note: None,
+            available_update: None,
+            update_check_started: false,
             session_restore_attempted: false,
             video_player: None,
             video_window: None,
@@ -293,7 +299,10 @@ impl cosmic::Application for AppModel {
             |result| cosmic::Action::App(Message::CacheDbReady(result)),
         );
 
-        (app, Task::batch([mpris_task, login_uri_task, title_task, cache_db_task]))
+        // Once per run, unless turned off: is there a newer release?
+        let update_task = if app.config.check_for_updates { app.start_update_check() } else { Task::none() };
+
+        (app, Task::batch([mpris_task, login_uri_task, title_task, cache_db_task, update_task]))
     }
 
     /// Track the current window size so views can scale text limits, etc.
@@ -785,6 +794,26 @@ impl cosmic::Application for AppModel {
             Message::LoadFavoriteTracks => self.handle_load_favorite_tracks(),
             Message::FavoriteTracksLoaded(result) => self.handle_favorite_tracks_loaded(result),
             Message::ToggleFavorite(track) => self.handle_toggle_favorite(track),
+            Message::SortFavoriteTracks(key) => {
+                self.handle_sort_favorite_tracks(key);
+                Task::none()
+            }
+            Message::SortFavoriteAlbums(key) => {
+                self.handle_sort_favorite_albums(key);
+                Task::none()
+            }
+            Message::SortFollowedArtists(key) => {
+                self.handle_sort_followed_artists(key);
+                Task::none()
+            }
+            Message::SortPlaylists(key) => {
+                self.handle_sort_playlists(key);
+                Task::none()
+            }
+            Message::SortMixes(key) => {
+                self.handle_sort_mixes(key);
+                Task::none()
+            }
             Message::FavoriteToggled(result) => {
                 self.handle_favorite_toggled(result);
                 Task::none()
@@ -858,6 +887,24 @@ impl cosmic::Application for AppModel {
                 self.handle_clear_error();
                 Task::none()
             }
+            Message::ListScrolled(offset) => {
+                self.list_offset = offset;
+                Task::none()
+            }
+            Message::ClearNote => {
+                self.note = None;
+                Task::none()
+            }
+            Message::UpdateChecked(result) => {
+                self.handle_update_checked(result);
+                Task::none()
+            }
+            Message::OpenReleaseNotes => self.handle_open_release_notes(),
+            Message::DismissUpdate => {
+                self.available_update = None;
+                Task::none()
+            }
+            Message::SetCheckForUpdates(on) => self.handle_set_check_for_updates(on),
             Message::LoadImage(url) => self.handle_load_image(url),
             Message::ImageLoaded(url, width, height, pixels) => {
                 self.handle_image_loaded(url, width, height, pixels);
@@ -886,6 +933,34 @@ impl cosmic::Application for AppModel {
                 self.handle_cancel_share();
                 Task::none()
             }
+
+            // Adding to playlists
+            Message::ShowAddToPlaylist(track) => self.handle_show_add_to_playlist(track),
+            Message::NewPlaylistNameChanged(name) => {
+                if let Some(picker) = &mut self.add_to_playlist {
+                    picker.new_name = name;
+                }
+                Task::none()
+            }
+            Message::NewPlaylistPublicChanged(public) => {
+                if let Some(picker) = &mut self.add_to_playlist {
+                    picker.new_public = public;
+                }
+                Task::none()
+            }
+            Message::AddToPlaylist(uuid) => self.handle_add_to_playlist(uuid),
+            Message::CreatePlaylistWithTrack => self.handle_create_playlist_with_track(),
+            Message::AddedToPlaylist(result) => self.handle_added_to_playlist(result),
+            Message::AskDeletePlaylist => {
+                self.confirm_delete_playlist = self.selected_playlist_uuid.clone();
+                Task::none()
+            }
+            Message::CancelDeletePlaylist => {
+                self.confirm_delete_playlist = None;
+                Task::none()
+            }
+            Message::DeletePlaylist => self.handle_delete_playlist(),
+            Message::PlaylistDeleted(result) => self.handle_playlist_deleted(result),
 
             // Misc handlers - MPRIS
             Message::MprisServiceStarted(result) => self.handle_mpris_service_started(result),

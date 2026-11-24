@@ -66,7 +66,6 @@ albums = อัลบั้ม
 artists = ศิลปิน
 playlists = เพลย์ลิสต์
 videos = วิดีโอ
-profiles = โปรไฟล์
 tracks = แทร็ก
 favorite-tracks = แทร็กโปรด
 
@@ -96,6 +95,7 @@ fallback-playlist = เพลย์ลิสต์
 released = วันที่วางจำหน่าย: {$year}
 quality-label = คุณภาพ: {$quality}
 track-count = {$count} แทร็ก
+video-count = {$count} วิดีโอ
 artist-count = {$count} ศิลปิน
 
 # การค้นหา
@@ -123,11 +123,35 @@ logging-description = ปริมาณที่ Maré เขียนลงใ
 clear-history = ล้างประวัติ
 history-filter-placeholder = กรองประวัติ…
 favorite-tracks-filter-placeholder = กรองแทร็กโปรด…
+sort-name = ก–ฮ
+sort-date-added = วันที่เพิ่ม
+sort-last-updated = อัปเดตล่าสุด
+
+# Changing playlists
+add-to-playlist = เพิ่มลงในเพลย์ลิสต์
+new-playlist = เพลย์ลิสต์ใหม่
+playlist-name = ชื่อเพลย์ลิสต์
+playlist-private = ส่วนตัว
+playlist-public = สาธารณะ
+create-playlist = สร้าง
+added-to-playlist = เพิ่มลงใน { $playlist } แล้ว
+already-in-playlist = มีอยู่ใน { $playlist } แล้ว
+delete-playlist = ลบเพลย์ลิสต์
+delete-playlist-confirm = ลบ “{ $playlist }” ใช่ไหม การดำเนินการนี้ย้อนกลับไม่ได้
+delete = ลบ
+deleted-playlist = ลบ { $playlist } แล้ว
+
+# Updates
+update-available = Maré Player { $version } พร้อมใช้งานแล้ว
+update-whats-new = มีอะไรใหม่
+check-for-updates = ตรวจหาอัปเดต
+check-for-updates-description = ถาม GitHub หนึ่งครั้งต่อการเปิดใช้งานว่ามีรุ่นใหม่กว่าหรือไม่
 
 # คำแนะนำเครื่องมือ
 tooltip-search = ค้นหา
 tooltip-settings = การตั้งค่า
 tooltip-shuffle-play = เล่นแบบสุ่ม
+tooltip-reverse-order = กลับลำดับ
 tooltip-refresh = รีเฟรช
 tooltip-previous-track = แทร็กก่อนหน้า
 tooltip-next-track = แทร็กถัดไป

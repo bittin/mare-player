@@ -140,6 +140,54 @@ pub fn virtual_list_row<'a>(content: impl Into<Element<'a, Message>>, gap: u16) 
 }
 
 // =============================================================================
+// Sort Buttons
+// =============================================================================
+
+/// A small choice button, styled like the search category chips and
+/// highlighted when `active`.
+pub fn chip<'a>(content: impl Into<Element<'a, Message>>, active: bool, on_press: Message) -> button::Button<'a, Message> {
+    let class = if active { cosmic::theme::Button::Suggested } else { cosmic::theme::Button::Standard };
+    button::custom(content).padding([4, 12]).class(class).on_press(on_press)
+}
+
+/// The A–Z and date buttons above a collection list. `date_label` names the
+/// date the list is ordered by, such as "Date added".
+///
+/// The active button is highlighted and shows the direction (up for A–Z or
+/// oldest first, down for Z–A or newest first). Pressing it again reverses
+/// the order; pressing the other one switches to it (see
+/// [`ListSort::pressed`](crate::config::ListSort::pressed)). Styled like the
+/// search category chips.
+pub fn sort_buttons<'a>(
+    sort: crate::config::ListSort,
+    date_label: String,
+    on_press: impl Fn(crate::config::SortKey) -> Message,
+) -> Element<'a, Message> {
+    use crate::config::SortKey;
+
+    let chip = |key: SortKey, label: String| -> Element<'a, Message> {
+        let active = sort.key == key;
+        let mut content = widget::Row::new().push(text(label).size(12)).spacing(4).align_y(Alignment::Center);
+        if active {
+            let arrow = if sort.descending { "pan-down-symbolic" } else { "pan-up-symbolic" };
+            content = content.push(widget::icon::from_name(arrow).size(12));
+        }
+        let chip = chip(content, active, on_press(key));
+        if active {
+            widget::tooltip(chip, text(crate::fl!("tooltip-reverse-order")), widget::tooltip::Position::Bottom).into()
+        } else {
+            chip.into()
+        }
+    };
+
+    widget::Row::new()
+        .push(chip(SortKey::Name, crate::fl!("sort-name")))
+        .push(chip(SortKey::DateAdded, date_label))
+        .spacing(6)
+        .into()
+}
+
+// =============================================================================
 // Header Back Button
 // =============================================================================
 
@@ -292,12 +340,25 @@ pub fn scrollable_list(content: widget::Column<'_, Message, cosmic::Theme>) -> E
     #[cfg(feature = "panel-applet")]
     {
         use super::constants::MAX_POPUP_HEIGHT;
-        container(scrollable(content.padding([0, 12, 0, 0])).height(Length::Shrink)).max_height(MAX_POPUP_HEIGHT).into()
+        container(list_scrollable(content.padding([0, 12, 0, 0])).height(Length::Shrink)).max_height(MAX_POPUP_HEIGHT).into()
     }
     #[cfg(not(feature = "panel-applet"))]
     {
-        scrollable(content.padding([0, 12, 0, 0])).height(Length::Fill).into()
+        list_scrollable(content.padding([0, 12, 0, 0])).height(Length::Fill).into()
     }
+}
+
+/// The scrollable holding the current view's list. A view shows one at
+/// most, so they share this id, by which going back scrolls the list to
+/// where it was (see [`crate::state::NavEntry`]).
+pub static LIST_SCROLL_ID: std::sync::LazyLock<widget::Id> = std::sync::LazyLock::new(widget::Id::unique);
+
+/// A view's list scrollable: named [`LIST_SCROLL_ID`], and reporting its
+/// offset as it scrolls.
+fn list_scrollable<'a>(
+    content: impl Into<Element<'a, Message>>,
+) -> scrollable::Scrollable<'a, Message, cosmic::Theme, cosmic::Renderer> {
+    scrollable(content).id(LIST_SCROLL_ID.clone()).on_scroll(|viewport| Message::ListScrolled(viewport.absolute_offset().y))
 }
 
 /// Wrap any widget element in a scrollable container.
@@ -310,12 +371,71 @@ pub fn scrollable_element<'a>(content: impl Into<Element<'a, Message>>) -> Eleme
     #[cfg(feature = "panel-applet")]
     {
         use super::constants::MAX_POPUP_HEIGHT;
-        container(scrollable(container(elem).width(Length::Fill).padding([0, 12, 0, 0])).height(Length::Shrink))
+        container(list_scrollable(container(elem).width(Length::Fill).padding([0, 12, 0, 0])).height(Length::Shrink))
             .max_height(MAX_POPUP_HEIGHT)
             .into()
     }
     #[cfg(not(feature = "panel-applet"))]
     {
-        scrollable(container(elem).width(Length::Fill).padding([0, 12, 0, 0])).height(Length::Fill).into()
+        list_scrollable(container(elem).width(Length::Fill).padding([0, 12, 0, 0])).height(Length::Fill).into()
+    }
+}
+
+// Lay the real list scrollables out with the CPU renderer, as rows.rs does.
+#[cfg(all(test, not(feature = "wgpu")))]
+mod tests {
+    use super::{LIST_SCROLL_ID, scrollable_element, scrollable_list};
+    use crate::messages::Message;
+    use cosmic::Element;
+    use cosmic::iced::core::widget::operation::{self, Operation, Scrollable};
+    use cosmic::iced::core::widget::{Id, Tree};
+    use cosmic::iced::core::{Layout, Length, Rectangle, Size, Vector, layout};
+    use cosmic::iced::widget::scrollable::AbsoluteOffset;
+    use cosmic::widget;
+
+    /// Where the list named [`LIST_SCROLL_ID`] is scrolled to.
+    struct ListTranslation(Option<Vector>);
+
+    impl Operation for ListTranslation {
+        fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn Operation)) {
+            operate(self);
+        }
+
+        fn scrollable(&mut self, id: Option<&Id>, _: Rectangle, _: Rectangle, translation: Vector, _: &mut dyn Scrollable) {
+            if id == Some(&*LIST_SCROLL_ID) {
+                self.0 = Some(translation);
+            }
+        }
+    }
+
+    /// Ask the list in `element` to scroll to `y`, as going back does, and
+    /// report where it ended up.
+    fn scrolled_to(mut element: Element<'_, Message>, y: f32) -> Option<f32> {
+        let renderer = cosmic::Renderer::new(cosmic::iced::Font::default(), 14.0.into());
+        let mut tree = Tree::new(element.as_widget());
+        let limits = layout::Limits::new(Size::ZERO, Size::new(300.0, 300.0));
+        let node = element.as_widget_mut().layout(&mut tree, &renderer, &limits);
+        let mut scroll = operation::scrollable::scroll_to(LIST_SCROLL_ID.clone(), AbsoluteOffset { x: None, y: Some(y) });
+        element.as_widget_mut().operate(&mut tree, Layout::new(&node), &renderer, &mut scroll);
+        let mut found = ListTranslation(None);
+        element.as_widget_mut().operate(&mut tree, Layout::new(&node), &renderer, &mut found);
+        found.0.map(|translation| translation.y)
+    }
+
+    fn row<'a>() -> Element<'a, Message> {
+        widget::Space::new().width(Length::Fill).height(Length::Fixed(40.0)).into()
+    }
+
+    #[test]
+    fn a_column_list_scrolls_back_by_its_name() {
+        let list = scrollable_list(widget::Column::with_children((0..50).map(|_| row())));
+        assert_eq!(scrolled_to(list, 400.0), Some(400.0));
+    }
+
+    #[test]
+    fn a_virtual_list_scrolls_back_by_its_name() {
+        let content: cosmic::iced::widget::list::Content<u32> = (0..50).collect();
+        let list = cosmic::iced::widget::list::List::new(&content, |_, _| row());
+        assert_eq!(scrolled_to(scrollable_element(list), 400.0), Some(400.0));
     }
 }

@@ -66,7 +66,6 @@ albums = 앨범
 artists = 아티스트
 playlists = 재생목록
 videos = 비디오
-profiles = 프로필
 tracks = 트랙
 favorite-tracks = 즐겨찾기 트랙
 
@@ -96,6 +95,7 @@ fallback-playlist = 재생목록
 released = 발매일: {$year}
 quality-label = 음질: {$quality}
 track-count = 트랙 {$count}곡
+video-count = 동영상 {$count}개
 artist-count = 아티스트 {$count}명
 
 # Search
@@ -123,11 +123,35 @@ logging-description = Maré가 시스템 저널에 기록하는 양입니다. �
 clear-history = 기록 지우기
 history-filter-placeholder = 기록 필터…
 favorite-tracks-filter-placeholder = 즐겨찾기 트랙 필터…
+sort-name = 이름순
+sort-date-added = 추가한 날짜
+sort-last-updated = 최근 업데이트
+
+# Changing playlists
+add-to-playlist = 재생목록에 추가
+new-playlist = 새 재생목록
+playlist-name = 재생목록 이름
+playlist-private = 비공개
+playlist-public = 공개
+create-playlist = 만들기
+added-to-playlist = { $playlist }에 추가됨
+already-in-playlist = 이미 { $playlist }에 있음
+delete-playlist = 재생목록 삭제
+delete-playlist-confirm = “{ $playlist }”을(를) 삭제할까요? 되돌릴 수 없습니다.
+delete = 삭제
+deleted-playlist = { $playlist } 삭제됨
+
+# Updates
+update-available = Maré Player { $version } 사용 가능
+update-whats-new = 새로운 기능
+check-for-updates = 업데이트 확인
+check-for-updates-description = 실행할 때마다 한 번, 새 릴리스가 있는지 GitHub에 확인합니다.
 
 # Tooltips
 tooltip-search = 검색
 tooltip-settings = 설정
 tooltip-shuffle-play = 셔플 재생
+tooltip-reverse-order = 순서 뒤집기
 tooltip-refresh = 새로고침
 tooltip-previous-track = 이전 트랙
 tooltip-next-track = 다음 트랙

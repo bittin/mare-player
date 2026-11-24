@@ -382,12 +382,13 @@ impl AppModel {
     pub fn handle_playlists_loaded(&mut self, result: Result<Vec<Playlist>, String>) -> Task<cosmic::Action<Message>> {
         // Only clear is_loading when the user is actually viewing playlists,
         // so background pre-fetches don't clobber loading state for other views.
-        if self.view_state == ViewState::Playlists {
+        if matches!(self.view_state, ViewState::Playlists | ViewState::AddToPlaylist) {
             self.is_loading = false;
         }
         match result {
             Ok(playlists) => {
                 self.user_playlists = playlists;
+                self.sort_user_playlists();
                 // Covers load lazily per visible row (HandleCache::get_or_request).
                 // Kick off 2×2 grid thumbnail generation in the background.
                 Task::done(cosmic::Action::App(Message::GeneratePlaylistThumbnails))
@@ -423,19 +424,54 @@ impl AppModel {
         self.load_albums()
     }
 
-    /// Rebuild the mixes virtual-`List` content from `user_mixes`.
+    /// Put `user_playlists` in the chosen order; the playlists view shows
+    /// them as they are.
+    pub(crate) fn sort_user_playlists(&mut self) {
+        self.user_playlists = crate::handlers::data::favorites::sort_favorites(
+            std::mem::take(&mut self.user_playlists),
+            self.config.playlists_sort,
+            |p| &p.title,
+            |p| p.added_at,
+        );
+    }
+
+    /// Rebuild the mixes virtual-`List` content from `user_mixes`, in the
+    /// chosen order.
     pub(crate) fn rebuild_mixes_content(&mut self) {
-        self.mixes_content = self.user_mixes.iter().cloned().collect();
+        self.mixes_content = crate::handlers::data::favorites::sort_favorites(
+            self.user_mixes.clone(),
+            self.config.mixes_sort,
+            |m| &m.title,
+            |m| m.updated_at,
+        )
+        .into_iter()
+        .collect();
     }
 
-    /// Rebuild the followed-artists (profiles) virtual-`List` content.
+    /// Rebuild the followed-artists virtual-`List` content from
+    /// `user_followed_artists`, in the chosen order.
     pub(crate) fn rebuild_profiles_content(&mut self) {
-        self.profiles_content = self.user_followed_artists.iter().cloned().collect();
+        self.profiles_content = crate::handlers::data::favorites::sort_favorites(
+            self.user_followed_artists.clone(),
+            self.config.followed_artists_sort,
+            |a| &a.name,
+            |a| a.added_at,
+        )
+        .into_iter()
+        .collect();
     }
 
-    /// Rebuild the favorite-albums virtual-`List` content from `user_albums`.
+    /// Rebuild the favorite-albums virtual-`List` content from `user_albums`,
+    /// in the chosen order.
     pub(crate) fn rebuild_albums_content(&mut self) {
-        self.albums_content = self.user_albums.iter().cloned().collect();
+        self.albums_content = crate::handlers::data::favorites::sort_favorites(
+            self.user_albums.clone(),
+            self.config.favorite_albums_sort,
+            |a| &a.title,
+            |a| a.added_at,
+        )
+        .into_iter()
+        .collect();
     }
 
     /// Rebuild the track-detail recommendations into virtual-`List` content:
@@ -736,6 +772,9 @@ impl AppModel {
                 // Populate favorite track IDs set
                 self.favorite_track_ids = tracks.iter().map(|t| t.id.clone()).collect();
                 self.user_favorite_tracks = tracks;
+                if self.view_state == ViewState::FavoriteTracks {
+                    self.rebuild_favorites_track_list();
+                }
                 // Covers load lazily per visible row via get_or_request.
                 Task::none()
             }
@@ -1098,9 +1137,8 @@ impl AppModel {
     pub fn handle_profiles_loaded(&mut self, result: Result<Vec<Artist>, String>) -> Task<cosmic::Action<Message>> {
         self.is_loading = false;
         match result {
-            Ok(mut artists) => {
+            Ok(artists) => {
                 tracing::info!("Loaded {} followed artists", artists.len());
-                artists.sort_by_key(|a| a.name.to_lowercase());
                 self.followed_artist_ids = artists.iter().map(|a| a.id.clone()).collect();
                 self.user_followed_artists = artists;
                 self.rebuild_profiles_content();

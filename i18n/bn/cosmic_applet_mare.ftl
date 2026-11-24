@@ -66,7 +66,6 @@ albums = অ্যালবাম
 artists = শিল্পী
 playlists = প্লেলিস্ট
 videos = ভিডিও
-profiles = প্রোফাইল
 tracks = ট্র্যাক
 favorite-tracks = প্রিয় ট্র্যাক
 
@@ -99,6 +98,7 @@ track-count = {$count}টি {$count ->
     [one] ট্র্যাক
    *[other] ট্র্যাক
 }
+video-count = {$count}টি ভিডিও
 artist-count = {$count} জন {$count ->
     [one] শিল্পী
    *[other] শিল্পী
@@ -129,11 +129,35 @@ logging-description = Maré সিস্টেম জার্নালে ক�
 clear-history = ইতিহাস মুছুন
 history-filter-placeholder = ইতিহাস ফিল্টার করুন…
 favorite-tracks-filter-placeholder = প্রিয় ট্র্যাক ফিল্টার করুন…
+sort-name = নাম অনুযায়ী
+sort-date-added = যোগ করার তারিখ
+sort-last-updated = সর্বশেষ আপডেট
+
+# Changing playlists
+add-to-playlist = প্লেলিস্টে যোগ করুন
+new-playlist = নতুন প্লেলিস্ট
+playlist-name = প্লেলিস্টের নাম
+playlist-private = ব্যক্তিগত
+playlist-public = সর্বজনীন
+create-playlist = তৈরি করুন
+added-to-playlist = { $playlist }-এ যোগ করা হয়েছে
+already-in-playlist = ইতিমধ্যে { $playlist }-এ আছে
+delete-playlist = প্লেলিস্ট মুছুন
+delete-playlist-confirm = “{ $playlist }” মুছবেন? এটি আর ফেরানো যাবে না।
+delete = মুছুন
+deleted-playlist = { $playlist } মুছে ফেলা হয়েছে
+
+# Updates
+update-available = Maré Player { $version } পাওয়া যাচ্ছে
+update-whats-new = নতুন কী
+check-for-updates = আপডেট খুঁজুন
+check-for-updates-description = প্রতিবার চালু হলে একবার GitHub-এ নতুন রিলিজ আছে কি না দেখে।
 
 # টুলটিপ
 tooltip-search = অনুসন্ধান
 tooltip-settings = সেটিংস
 tooltip-shuffle-play = শাফল প্লে
+tooltip-reverse-order = ক্রম উল্টান
 tooltip-refresh = রিফ্রেশ
 tooltip-previous-track = আগের ট্র্যাক
 tooltip-next-track = পরের ট্র্যাক

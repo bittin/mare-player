@@ -66,7 +66,6 @@ albums = アルバム
 artists = アーティスト
 playlists = プレイリスト
 videos = ビデオ
-profiles = プロフィール
 tracks = トラック
 favorite-tracks = お気に入りのトラック
 
@@ -96,6 +95,7 @@ fallback-playlist = プレイリスト
 released = リリース: {$year}
 quality-label = 音質: {$quality}
 track-count = {$count} 曲
+video-count = {$count} 本の動画
 artist-count = {$count} アーティスト
 
 # 検索
@@ -123,11 +123,35 @@ logging-description = Maré がシステムジャーナルに書き込む量。�
 clear-history = 履歴をクリア
 history-filter-placeholder = 履歴を絞り込み…
 favorite-tracks-filter-placeholder = お気に入りを絞り込み…
+sort-name = タイトル順
+sort-date-added = 追加日
+sort-last-updated = 最終更新
+
+# Changing playlists
+add-to-playlist = プレイリストに追加
+new-playlist = 新しいプレイリスト
+playlist-name = プレイリスト名
+playlist-private = 非公開
+playlist-public = 公開
+create-playlist = 作成
+added-to-playlist = { $playlist } に追加しました
+already-in-playlist = { $playlist } に追加済みです
+delete-playlist = プレイリストを削除
+delete-playlist-confirm = 「{ $playlist }」を削除しますか？元に戻せません。
+delete = 削除
+deleted-playlist = { $playlist } を削除しました
+
+# Updates
+update-available = Maré Player { $version } が利用可能です
+update-whats-new = 新機能
+check-for-updates = アップデートを確認
+check-for-updates-description = 起動ごとに一度、新しいリリースがあるか GitHub に問い合わせます。
 
 # ツールチップ
 tooltip-search = 検索
 tooltip-settings = 設定
 tooltip-shuffle-play = シャッフル再生
+tooltip-reverse-order = 並び順を逆にする
 tooltip-refresh = 更新
 tooltip-previous-track = 前のトラック
 tooltip-next-track = 次のトラック

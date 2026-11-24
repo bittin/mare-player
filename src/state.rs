@@ -250,6 +250,11 @@ pub struct AppModel {
     pub(crate) user_playlists: Vec<Playlist>,
     /// Cached 2×2 album-art grid thumbnails for playlists (UUID -> image handle)
     pub(crate) playlist_thumbnails: HashMap<String, Handle>,
+    /// The "Add to playlist" picker's track and new-playlist form. Set when
+    /// the picker opens; picking a playlist or creating one takes it.
+    pub(crate) add_to_playlist: Option<AddToPlaylist>,
+    /// The playlist whose page asks "Delete it?", until the user answers.
+    pub(crate) confirm_delete_playlist: Option<String>,
     /// User favorite albums
     pub(crate) user_albums: Vec<Album>,
     /// Favorite albums as virtual-`List` content (only visible cards render, so
@@ -372,11 +377,21 @@ pub struct AppModel {
     /// Set of artist IDs that the user follows
     pub(crate) followed_artist_ids: HashSet<String>,
     /// Navigation stack for back navigation (push current state before entering detail pages)
-    pub(crate) nav_stack: Vec<ViewState>,
+    pub(crate) nav_stack: Vec<NavEntry>,
+    /// How far the current view's list is scrolled, as it reports it. Kept
+    /// in the view's [`NavEntry`] when another view replaces it.
+    pub(crate) list_offset: f32,
     /// Loading state
     pub(crate) is_loading: bool,
-    /// Error message to display
+    /// Error message to display, in the red banner
     pub(crate) error_message: Option<String>,
+    /// A passing note ("Added to …"), in the green banner for a few seconds
+    pub(crate) note: Option<String>,
+    /// A newer release, in the green banner until dismissed. Checked once
+    /// per run, at startup.
+    pub(crate) available_update: Option<crate::update_check::AvailableUpdate>,
+    /// Whether this run has asked for a newer release yet (it asks once).
+    pub(crate) update_check_started: bool,
     /// Whether we've attempted to restore the session
     pub(crate) session_restore_attempted: bool,
     /// Active video pipeline, when a music video is playing. Holds a
@@ -527,6 +542,31 @@ impl AppModel {
     }
 }
 
+/// A view to go back to, and where its list was scrolled.
+///
+/// Leaving a view drops its list from the widget tree, and iced forgets
+/// the list's scroll position with it, so going back would land at the
+/// top. The offset is kept here instead and asked for again on the way
+/// back (see `AppModel::handle_navigate_back`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct NavEntry {
+    pub view: ViewState,
+    pub list_offset: f32,
+}
+
+/// What the "Add to playlist" picker is adding, and its new-playlist form.
+#[derive(Debug, Clone, Default)]
+pub struct AddToPlaylist {
+    /// The track or video to add.
+    pub track: Track,
+    /// The playlist the picker was opened from, which it doesn't offer.
+    pub exclude: Option<String>,
+    /// The new playlist's name, as typed.
+    pub new_name: String,
+    /// Whether the new playlist is public. Private until the user says so.
+    pub new_public: bool,
+}
+
 /// Current view state for the popup
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ViewState {
@@ -576,6 +616,8 @@ pub enum ViewState {
     Settings,
     /// Share prompt dialog (track_id, track_title, album_id, album_title, is_video)
     SharePrompt(String, String, Option<String>, Option<String>, bool),
+    /// "Add to playlist" picker for the track in `AppModel::add_to_playlist`
+    AddToPlaylist,
 }
 
 #[cfg(test)]

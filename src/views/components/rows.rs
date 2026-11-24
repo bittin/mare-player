@@ -76,6 +76,40 @@ pub(crate) fn build_track_radio_button<'a>(
     if available { area.into() } else { area.on_press(Message::Noop).on_release(Message::Noop).into() }
 }
 
+/// "Add to playlist" button for `track`, opening the picker. Shown in the
+/// now-playing bar and on a track's detail page, not in list rows, where it
+/// would crowd the title.
+pub(crate) fn add_to_playlist_button<'a>(track: Track) -> Element<'a, Message> {
+    button::icon(widget::icon::from_name("list-add-symbolic"))
+        .tooltip(fl!("add-to-playlist"))
+        .on_press(Message::ShowAddToPlaylist(track))
+        .padding(4)
+        .into()
+}
+
+/// `thumbnail` with a small video emblem in its bottom-right corner, marking
+/// a music video, or a playlist of nothing but videos.
+pub(crate) fn with_video_emblem<'a>(thumbnail: Element<'a, Message>) -> Element<'a, Message> {
+    let badge = container(widget::icon::from_name("emblem-videos-symbolic").size(12)).padding(2).class(
+        cosmic::theme::Container::custom(|_theme| cosmic::widget::container::Style {
+            background: Some(cosmic::iced::Background::Color(cosmic::iced::Color::from_rgba(0.0, 0.0, 0.0, 0.6))),
+            text_color: Some(cosmic::iced::Color::WHITE),
+            border: cosmic::iced::Border { radius: [7.0; 4].into(), ..Default::default() },
+            ..Default::default()
+        }),
+    );
+    cosmic::iced::widget::Stack::new()
+        .push(thumbnail)
+        .push(
+            container(badge)
+                .width(Length::Fixed(THUMBNAIL_SIZE as f32))
+                .height(Length::Fixed(THUMBNAIL_SIZE as f32))
+                .align_x(Alignment::End)
+                .align_y(Alignment::End),
+        )
+        .into()
+}
+
 /// Standalone track row builder for virtual `List` closures.
 ///
 /// This contains the full row-building logic. The [`AppModel::track_row`]
@@ -87,29 +121,7 @@ pub(crate) fn build_track_row<'a>(
     opts: &TrackRowOptions,
 ) -> Element<'a, Message> {
     let base_thumbnail = build_thumbnail(loaded_images, track.cover_url.as_deref(), opts.fallback_icon);
-    // Video entries get a small video emblem in the thumbnail's corner.
-    let thumbnail: Element<'a, Message> = if track.is_video {
-        let badge = container(widget::icon::from_name("emblem-videos-symbolic").size(12)).padding(2).class(
-            cosmic::theme::Container::custom(|_theme| cosmic::widget::container::Style {
-                background: Some(cosmic::iced::Background::Color(cosmic::iced::Color::from_rgba(0.0, 0.0, 0.0, 0.6))),
-                text_color: Some(cosmic::iced::Color::WHITE),
-                border: cosmic::iced::Border { radius: [7.0; 4].into(), ..Default::default() },
-                ..Default::default()
-            }),
-        );
-        cosmic::iced::widget::Stack::new()
-            .push(base_thumbnail)
-            .push(
-                container(badge)
-                    .width(Length::Fixed(THUMBNAIL_SIZE as f32))
-                    .height(Length::Fixed(THUMBNAIL_SIZE as f32))
-                    .align_x(Alignment::End)
-                    .align_y(Alignment::End),
-            )
-            .into()
-    } else {
-        base_thumbnail
-    };
+    let thumbnail = if track.is_video { with_video_emblem(base_thumbnail) } else { base_thumbnail };
 
     let track_info = fading_text_column(vec![
         text(track.title.clone()).size(13).wrapping(Wrapping::None).into(),
@@ -144,7 +156,12 @@ pub(crate) fn build_track_row<'a>(
     let tracks_arc = Arc::clone(&opts.tracks);
     let source_clone = opts.source.clone();
 
-    list_item(row, Message::PlayTrackList(tracks_arc, index, source_clone), 0)
+    // A click plays from here; a right-click opens the track's page. Buttons
+    // only take the left button, hence the mouse area, and the release (as
+    // on the back button) lets a right-click be abandoned by moving off.
+    widget::mouse_area(list_item(row, Message::PlayTrackList(tracks_arc, index, source_clone), 0))
+        .on_right_release(Message::ShowTrackDetail(track.clone()))
+        .into()
 }
 
 /// Standalone album row builder for virtual `List` closures. The
@@ -234,12 +251,23 @@ impl AppModel {
     ///
     /// Used in the playlists list and search results. Wraps content via
     /// [`list_item`].
-    pub fn playlist_row<'a>(&self, playlist: &Playlist) -> Element<'a, Message> {
+    pub fn playlist_row<'a>(&self, playlist: &Playlist, on_press: Message) -> Element<'a, Message> {
         let mut info_children: Vec<Element<'_, Message>> =
             vec![text(playlist.title.clone()).size(13).wrapping(Wrapping::None).into()];
 
-        if playlist.num_tracks > 0 {
-            info_children.push(text(fl!("track-count", count = playlist.num_tracks)).size(11).into());
+        // "12 tracks · 3 videos · Private": the counts there are, and
+        // whether it's public when that's known (only for the user's own
+        // playlists).
+        let details: Vec<String> = [
+            (playlist.num_tracks > 0).then(|| fl!("track-count", count = playlist.num_tracks)),
+            (playlist.num_videos > 0).then(|| fl!("video-count", count = playlist.num_videos)),
+            playlist.public.map(|public| if public { fl!("playlist-public") } else { fl!("playlist-private") }),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+        if !details.is_empty() {
+            info_children.push(text(details.join(" · ")).size(11).wrapping(Wrapping::None).into());
         }
 
         let info = fading_text_column(info_children);
@@ -251,10 +279,11 @@ impl AppModel {
         } else {
             self.thumbnail(playlist.image_url.as_deref(), "folder-music-symbolic")
         };
+        let thumb = if playlist.is_videos_only() { with_video_emblem(thumb) } else { thumb };
 
         let row = widget::Row::new().push(thumb).push(info).spacing(8).align_y(Alignment::Center).width(Length::Fill);
 
-        list_item(row, Message::ShowPlaylistDetail(playlist.uuid.clone(), playlist.title.clone()), 6)
+        list_item(row, on_press, 6)
     }
 
     /// Create a main-menu navigation row (icon + label + chevron).
@@ -279,7 +308,7 @@ impl AppModel {
 // Both the default applet and --no-default-features standalone use this renderer.
 #[cfg(all(test, not(feature = "wgpu")))]
 mod tests {
-    use super::{TrackRowOptions, build_track_radio_button, build_track_row};
+    use super::{TrackRowOptions, add_to_playlist_button, build_track_radio_button, build_track_row};
     use crate::messages::Message;
     use crate::state::HandleCache;
     use crate::tidal::models::Track;
@@ -292,7 +321,11 @@ mod tests {
         Track { id: "seed".into(), title: "Seed track".into(), ..Default::default() }
     }
 
-    fn click(mut element: Element<'_, Message>, point: Point) -> (Vec<Message>, Vec<bool>) {
+    fn click(element: Element<'_, Message>, point: Point) -> (Vec<Message>, Vec<bool>) {
+        click_with(mouse::Button::Left, element, point)
+    }
+
+    fn click_with(button: mouse::Button, mut element: Element<'_, Message>, point: Point) -> (Vec<Message>, Vec<bool>) {
         let renderer = cosmic::Renderer::new(cosmic::iced::Font::default(), 14.0.into());
         let mut tree = Tree::new(element.as_widget());
         let limits = layout::Limits::new(Size::ZERO, Size::new(300.0, 100.0));
@@ -300,7 +333,7 @@ mod tests {
         let viewport = Rectangle::new(Point::ORIGIN, Size::new(300.0, 100.0));
         let mut messages = Vec::new();
         let mut captured = Vec::new();
-        for event in [mouse::Event::ButtonPressed(mouse::Button::Left), mouse::Event::ButtonReleased(mouse::Button::Left)] {
+        for event in [mouse::Event::ButtonPressed(button), mouse::Event::ButtonReleased(button)] {
             let mut shell = Shell::new(&mut messages);
             element.as_widget_mut().update(
                 &mut tree,
@@ -328,6 +361,12 @@ mod tests {
         // width, inter-control gap, then half the 20px compact radio button.
         let radio_center = Point::new(300.0 - 8.0 - opts.duration_column_width() - 4.0 - 10.0, 24.0);
         (build_track_row(&HandleCache::new(0), &track, 0, &opts), radio_center)
+    }
+
+    #[test]
+    fn add_to_playlist_opens_the_picker_for_its_track() {
+        let (messages, _) = click(add_to_playlist_button(track()), Point::new(10.0, 10.0));
+        assert!(matches!(messages.as_slice(), [Message::ShowAddToPlaylist(track)] if track.id == "seed"));
     }
 
     #[test]
@@ -382,6 +421,35 @@ mod tests {
             matches!(messages.as_slice(), [Message::PlayTrackList(tracks, 0, None)] if tracks.first().is_some_and(|t| t.id == "seed"))
         );
         assert_eq!(captured, [true, true]);
+    }
+
+    #[test]
+    fn right_clicking_a_track_row_opens_the_tracks_page() {
+        let track = track();
+        let opts = TrackRowOptions { tracks: Arc::from([track.clone()]), ..Default::default() };
+        let row = build_track_row(&HandleCache::new(0), &track, 0, &opts);
+        let (messages, _) = click_with(mouse::Button::Right, row, Point::new(60.0, 20.0));
+        assert!(matches!(messages.as_slice(), [Message::ShowTrackDetail(track)] if track.id == "seed"));
+        // Over the radio button too: it only answers the left button.
+        let (row, radio_center) = radio_in_playback_row(HashSet::new());
+        let (messages, _) = click_with(mouse::Button::Right, row, radio_center);
+        assert!(matches!(messages.as_slice(), [Message::ShowTrackDetail(track)] if track.id == "seed"));
+    }
+
+    #[test]
+    fn right_clicking_a_row_inside_a_track_list_opens_that_track() {
+        let tracks: Vec<Track> =
+            ["first", "second", "third"].map(|id| Track { id: id.into(), title: id.into(), ..Default::default() }).into();
+        let opts = TrackRowOptions { tracks: Arc::from(tracks.clone()), ..Default::default() };
+        let images = HandleCache::new(0);
+        let list: Element<'_, Message> = super::super::FixedHeightList::new(&tracks, |index, track| {
+            super::virtual_list_row(build_track_row(&images, track, index, &opts), 2)
+        })
+        .into();
+        // Within the harness's 100 px viewport, below the first row: the
+        // second row, not the first (rows are a little over 50 px tall).
+        let (messages, _) = click_with(mouse::Button::Right, list, Point::new(60.0, 75.0));
+        assert!(matches!(messages.as_slice(), [Message::ShowTrackDetail(track)] if track.id == "second"), "{messages:?}");
     }
 
     /// `FixedHeightList` places track row `i` at `i ×` the first row's

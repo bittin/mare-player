@@ -174,7 +174,10 @@ test-matrix *args:
     #!/usr/bin/env bash
     set -euo pipefail
     echo "═══ Testing: panel-applet (default features) ═══"
-    just features='--all-features' test --profile applet {{ args }}
+    # The applet as released: default features, CPU renderer. `--all-features`
+    # would add wgpu, which no build ships and which compiles out the
+    # CPU-renderer layout tests. (`just check` still compiles --all-features.)
+    just features='--features panel-applet' test --profile applet {{ args }}
     echo ""
     echo "═══ Testing: standalone (no default features) ═══"
     just features='--no-default-features --features wgpu' test --profile standalone {{ args }}
@@ -447,18 +450,12 @@ fuzz target="" duration="60":
         echo "All fuzz targets passed ✓"
     fi
 
-# Update Nostr mirrors from origin/main and tags (requires nak and local nip34.json)
+# Update Nostr mirrors from origin/main and tags (requires nak, a signer in NOSTR_SECRET_KEY, and local nip34.json)
 mirror-nostr:
     #!/usr/bin/env bash
     set -euo pipefail
     if [[ -z "${NOSTR_SECRET_KEY:-}" ]]; then
-        # Print the command literally; bunkeruri belongs to the caller's shell.
-        # shellcheck disable=SC2016
-        echo 'Missing bunker URL. Run: NOSTR_SECRET_KEY="$(bunkeruri)" just mirror-nostr' >&2
-        exit 1
-    fi
-    if [[ "$NOSTR_SECRET_KEY" != bunker://* ]]; then
-        echo 'NOSTR_SECRET_KEY must be a bunker:// URL from bunkeruri.' >&2
+        echo 'Missing signer: set NOSTR_SECRET_KEY to anything nak accepts as --sec.' >&2
         exit 1
     fi
     if ! command -v nak >/dev/null 2>&1; then
@@ -474,14 +471,32 @@ mirror-nostr:
 
 # Bump cargo version, create git commit, and create tag (usage: just tag v0.1.0 "Ocean Breeze")
 tag version name="":
-    #!/usr/bin/env sh
-    set -eu
+    #!/usr/bin/env bash
+    set -euo pipefail
     cargo_version="{{ trim_start_match(version, "v") }}"
     tag="v${cargo_version}"
-    find -type f -name Cargo.toml -exec sed -i "0,/^version/s/^version.*/version = \"${cargo_version}\"/" '{}' \; -exec git add '{}' \;
+    # Every tracked manifest, from git rather than a filesystem search, which
+    # would also reach untracked copies (e.g. Delta worktrees under .delta/).
+    mapfile -t manifests < <(git ls-files ':(glob)**/Cargo.toml')
+    # Only the [package] version: the first `version` line could belong to a
+    # dependency table.
+    for manifest in "${manifests[@]}"; do
+        sed -i "/^\[package\]/,/^\[/s/^version = \".*\"/version = \"${cargo_version}\"/" "$manifest"
+    done
+    for manifest in "${manifests[@]}"; do
+        if ! sed -n '/^\[package\]/,/^\[/p' "$manifest" | grep -qx "version = \"${cargo_version}\""; then
+            echo "error: ${manifest} has no [package] version ${cargo_version}" >&2
+            exit 1
+        fi
+    done
+    # Each workspace has its own lockfile; fuzz/ is a separate workspace.
+    mapfile -t lockfiles < <(git ls-files ':(glob)**/Cargo.lock')
+    for lockfile in "${lockfiles[@]}"; do
+        cargo update --workspace --manifest-path "$(dirname "$lockfile")/Cargo.toml"
+    done
     cargo check
     cargo clean
-    git add Cargo.lock
+    git add "${manifests[@]}" "${lockfiles[@]}"
     git commit -m "release: ${tag}"
     git tag -a "${tag}" -m '{{ name }}'
 

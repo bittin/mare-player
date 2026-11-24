@@ -117,14 +117,18 @@ impl AppModel {
     pub fn handle_set_log_level(&mut self, level: LogLevel) {
         tracing::info!("Setting console log level to {}", level.as_filter_str());
         self.config.log_level = level;
+        self.save_config("log level");
+        crate::logging::set_console_level(level);
+    }
 
+    /// Write the whole config to COSMIC's config store, logging (not
+    /// failing) if that doesn't work. `what` names the change, for the log.
+    pub(crate) fn save_config(&self, what: &str) {
         if let Ok(config_context) = cosmic::cosmic_config::Config::new(Self::APP_ID, Config::VERSION)
             && let Err(e) = self.config.write_entry(&config_context)
         {
-            tracing::error!("Failed to save log level config: {}", e);
+            tracing::error!("Failed to save {what} config: {e}");
         }
-
-        crate::logging::set_console_level(level);
     }
 
     /// Persist the most-recently-recorded play-history entry (fire-and-forget).
@@ -176,13 +180,7 @@ impl AppModel {
     pub fn handle_set_audio_quality(&mut self, quality: AudioQuality) -> Task<cosmic::Action<Message>> {
         // Update local config
         self.config.audio_quality = quality;
-
-        // Persist config to disk
-        if let Ok(config_context) = cosmic::cosmic_config::Config::new(Self::APP_ID, Config::VERSION)
-            && let Err(e) = self.config.write_entry(&config_context)
-        {
-            tracing::error!("Failed to save audio quality config: {}", e);
-        }
+        self.save_config("audio quality");
 
         // Apply to the TIDAL client
         let client = self.tidal_client.clone();
@@ -254,13 +252,77 @@ impl AppModel {
                 tracing::warn!("Failed to open in browser: {}", e);
             }
         });
-        self.error_message = Some(format!("Link copied & opened: {}", url));
+        self.show_note(format!("Link copied & opened: {}", url))
+    }
+
+    /// Show `note` in the green banner for three seconds. Notes have their
+    /// own banner, so the timer never clears an error that came meanwhile.
+    pub(crate) fn show_note(&mut self, note: String) -> Task<cosmic::Action<Message>> {
+        self.note = Some(note);
         Task::perform(
             async {
                 tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
             },
-            |_| cosmic::Action::App(Message::ClearError),
+            |_| cosmic::Action::App(Message::ClearNote),
         )
+    }
+
+    /// Ask whether a newer release is out, unless this run already has.
+    pub(crate) fn start_update_check(&mut self) -> Task<cosmic::Action<Message>> {
+        if self.update_check_started {
+            return Task::none();
+        }
+        self.update_check_started = true;
+        Task::perform(crate::update_check::check(), |result| cosmic::Action::App(Message::UpdateChecked(result)))
+    }
+
+    /// Turn the update check on or off, remembering the choice.
+    pub fn handle_set_check_for_updates(&mut self, on: bool) -> Task<cosmic::Action<Message>> {
+        let task = self.set_check_for_updates(on);
+        self.save_config("update check");
+        task
+    }
+
+    /// Turn the update check on or off, without saving the choice. Off hides
+    /// the banner; on checks now if this run hasn't yet.
+    pub(crate) fn set_check_for_updates(&mut self, on: bool) -> Task<cosmic::Action<Message>> {
+        self.config.check_for_updates = on;
+        if on {
+            self.start_update_check()
+        } else {
+            self.available_update = None;
+            Task::none()
+        }
+    }
+
+    /// Keep a newer release to announce. A failed check is no news: it is
+    /// logged, and shows nothing. Nor does a result that arrives after the
+    /// check was turned off.
+    pub fn handle_update_checked(&mut self, result: Result<Option<crate::update_check::AvailableUpdate>, String>) {
+        if !self.config.check_for_updates {
+            return;
+        }
+        match result {
+            Ok(Some(update)) => {
+                tracing::info!("Maré Player {} is available: {}", update.version, update.url);
+                self.available_update = Some(update);
+            }
+            Ok(None) => tracing::debug!("Maré Player is up to date"),
+            Err(e) => tracing::debug!("Couldn't check for a newer Maré Player: {e}"),
+        }
+    }
+
+    /// Open the available update's release notes in the browser.
+    pub fn handle_open_release_notes(&mut self) -> Task<cosmic::Action<Message>> {
+        let Some(url) = self.available_update.as_ref().map(|update| update.url.clone()) else {
+            return Task::none();
+        };
+        tokio::spawn(async move {
+            if let Err(e) = crate::helpers::open_in_browser(&url).await {
+                tracing::warn!("Failed to open the release notes: {}", e);
+            }
+        });
+        Task::none()
     }
 
     /// Handle MPRIS service started

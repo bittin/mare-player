@@ -66,7 +66,6 @@ albums = Album
 artists = Artis
 playlists = Senarai Main
 videos = Video
-profiles = Profil
 tracks = Lagu
 favorite-tracks = Lagu Kegemaran
 
@@ -96,6 +95,7 @@ fallback-playlist = Senarai Main
 released = Dikeluarkan: {$year}
 quality-label = Kualiti: {$quality}
 track-count = {$count} lagu
+video-count = {$count} video
 artist-count = {$count} artis
 
 # Carian
@@ -123,11 +123,35 @@ logging-description = Berapa banyak Maré menulis ke jurnal sistem. Berkuat kuas
 clear-history = Kosongkan Sejarah
 history-filter-placeholder = Tapis sejarah…
 favorite-tracks-filter-placeholder = Tapis lagu kegemaran…
+sort-name = A–Z
+sort-date-added = Tarikh ditambah
+sort-last-updated = Kemas kini terakhir
+
+# Changing playlists
+add-to-playlist = Tambah ke senarai main
+new-playlist = Senarai main baharu
+playlist-name = Nama senarai main
+playlist-private = Peribadi
+playlist-public = Awam
+create-playlist = Cipta
+added-to-playlist = Ditambah ke { $playlist }
+already-in-playlist = Sudah ada dalam { $playlist }
+delete-playlist = Padam senarai main
+delete-playlist-confirm = Padam “{ $playlist }”? Tindakan ini tidak boleh dibuat asal.
+delete = Padam
+deleted-playlist = { $playlist } dipadam
+
+# Updates
+update-available = Maré Player { $version } tersedia
+update-whats-new = Apa yang baharu
+check-for-updates = Semak kemas kini
+check-for-updates-description = Sekali setiap kali dijalankan, bertanya GitHub sama ada keluaran lebih baharu ada.
 
 # Petua alat
 tooltip-search = Cari
 tooltip-settings = Tetapan
 tooltip-shuffle-play = Main rawak
+tooltip-reverse-order = Terbalikkan susunan
 tooltip-refresh = Muat semula
 tooltip-previous-track = Lagu sebelumnya
 tooltip-next-track = Lagu seterusnya

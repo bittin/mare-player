@@ -66,7 +66,6 @@ albums = एल्बम
 artists = कलाकार
 playlists = प्लेलिस्ट
 videos = वीडियो
-profiles = प्रोफ़ाइल
 tracks = ट्रैक
 favorite-tracks = पसंदीदा ट्रैक
 
@@ -99,6 +98,7 @@ track-count = {$count} {$count ->
     [one] ट्रैक
    *[other] ट्रैक
 }
+video-count = {$count} वीडियो
 artist-count = {$count} {$count ->
     [one] कलाकार
    *[other] कलाकार
@@ -129,11 +129,35 @@ logging-description = Maré सिस्टम जर्नल में कि�
 clear-history = इतिहास साफ़ करें
 history-filter-placeholder = इतिहास फ़िल्टर करें…
 favorite-tracks-filter-placeholder = पसंदीदा ट्रैक फ़िल्टर करें…
+sort-name = नाम के अनुसार
+sort-date-added = जोड़ने की तारीख
+sort-last-updated = अंतिम अपडेट
+
+# Changing playlists
+add-to-playlist = प्लेलिस्ट में जोड़ें
+new-playlist = नई प्लेलिस्ट
+playlist-name = प्लेलिस्ट का नाम
+playlist-private = निजी
+playlist-public = सार्वजनिक
+create-playlist = बनाएँ
+added-to-playlist = { $playlist } में जोड़ा गया
+already-in-playlist = { $playlist } में पहले से है
+delete-playlist = प्लेलिस्ट हटाएँ
+delete-playlist-confirm = “{ $playlist }” हटाएँ? इसे पूर्ववत नहीं किया जा सकता।
+delete = हटाएँ
+deleted-playlist = { $playlist } हटाई गई
+
+# Updates
+update-available = Maré Player { $version } उपलब्ध है
+update-whats-new = नया क्या है
+check-for-updates = अपडेट जाँचें
+check-for-updates-description = हर बार चलने पर एक बार GitHub से नई रिलीज़ के बारे में पूछता है।
 
 # Tooltips
 tooltip-search = खोजें
 tooltip-settings = सेटिंग्स
 tooltip-shuffle-play = शफ़ल प्ले
+tooltip-reverse-order = क्रम उलटें
 tooltip-refresh = रीफ़्रेश
 tooltip-previous-track = पिछला ट्रैक
 tooltip-next-track = अगला ट्रैक
